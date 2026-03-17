@@ -26,6 +26,7 @@ def generate_launch_description():
     mission_config = os.path.join(pkg_share, 'config', 'mission_params.yaml')
 
     use_rviz = LaunchConfiguration('use_rviz')
+    use_gazebo_gui = LaunchConfiguration('use_gazebo_gui')
     use_slider_gui = LaunchConfiguration('use_slider_gui')
     auto_start = LaunchConfiguration('auto_start')
     auto_send_goal = LaunchConfiguration('auto_send_goal')
@@ -49,6 +50,7 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'use_rviz': use_rviz,
+            'use_gazebo_gui': use_gazebo_gui,
             'use_slider_gui': use_slider_gui,
             'world_file': world_path,
             'world_name': 'warehouse',
@@ -141,6 +143,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2'),
+        DeclareLaunchArgument('use_gazebo_gui', default_value='true', description='Launch Gazebo GUI client'),
         DeclareLaunchArgument('use_slider_gui', default_value='false', description='Launch scissor slider GUI'),
         DeclareLaunchArgument('auto_start', default_value='false', description='Publish /robot_enable automatically'),
         DeclareLaunchArgument('auto_send_goal', default_value='false', description='Call /send_mission automatically'),

@@ -13,13 +13,13 @@ Panels:
 Visualization Manager:
   Class: ""
   Displays:
-    - Alpha: 0.5
+    - Alpha: 0.2800000011920929
       Cell Size: 1
       Class: rviz_default_plugins/Grid
       Color: 160; 160; 164
       Enabled: true
       Line Style:
-        Line Width: 0.029999999329447746
+        Line Width: 0.019999999552965164
         Value: Lines
       Name: Grid
       Normal Cell Count: 0
@@ -269,7 +269,7 @@ Visualization Manager:
           Value: true
         warehouse:
           Value: true
-      Marker Scale: 0.30000001192092896
+      Marker Scale: 0.20000000298023224
       Name: TF
       Show Arrows: true
       Show Axes: true
@@ -328,19 +328,19 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 255; 214; 0
+      Color: 255; 120; 0
       Enabled: true
       Head Diameter: 0.05000000074505806
       Head Length: 0.05000000074505806
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.03999999910593033
+      Line Width: 0.05999999865889549
       Name: PlannedPath
       Offset:
         X: 0
         Y: 0
-        Z: 0.019999999552965164
-      Pose Color: 255; 85; 0
+        Z: 0.03999999910593033
+      Pose Color: 255; 220; 0
       Pose Style: None
       Radius: 0.029999999329447746
       Shaft Diameter: 0.019999999552965164
@@ -356,19 +356,19 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 0; 255; 140
+      Color: 0; 240; 255
       Enabled: true
       Head Diameter: 0.05000000074505806
       Head Length: 0.05000000074505806
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.05999999865889549
+      Line Width: 0.09000000357627869
       Name: RobotPath
       Offset:
         X: 0
         Y: 0
-        Z: 0.029999999329447746
-      Pose Color: 25; 255; 240
+        Z: 0.07000000029802322
+      Pose Color: 0; 180; 255
       Pose Style: None
       Radius: 0.029999999329447746
       Shaft Diameter: 0.019999999552965164
@@ -384,7 +384,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_footprint
+    Fixed Frame: odom
     Frame Rate: 30
   Name: root
   Tools:

@@ -3,9 +3,11 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     RegisterEventHandler,
     SetEnvironmentVariable,
+    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
@@ -30,6 +32,7 @@ def generate_launch_description():
     spawn_y = LaunchConfiguration('spawn_y')
     spawn_z = LaunchConfiguration('spawn_z')
     spawn_yaw = LaunchConfiguration('spawn_yaw')
+    use_gazebo_gui = LaunchConfiguration('use_gazebo_gui')
 
     robot_description = Command(['xacro ', model_path])
 
@@ -41,6 +44,10 @@ def generate_launch_description():
     ign_resource_path = SetEnvironmentVariable(
         name='IGN_GAZEBO_RESOURCE_PATH',
         value=f'{pkg_share_parent}:{pkg_share}',
+    )
+    fastdds_transport = SetEnvironmentVariable(
+        name='FASTDDS_BUILTIN_TRANSPORTS',
+        value='UDPv4',
     )
 
     # ── Robot State Publisher ─────────────────────────────────────────
@@ -75,7 +82,23 @@ def generate_launch_description():
                 get_package_share_directory('ros_gz_sim'), 'launch', 'gz_sim.launch.py'
             )
         ]),
-        launch_arguments={'gz_args': ['-r -v 2 ', world_file_path]}.items(),
+        launch_arguments={'gz_args': ['-r -s -v 2 ', world_file_path]}.items(),
+    )
+
+    gazebo_gui = TimerAction(
+        period=2.0,
+        actions=[
+            ExecuteProcess(
+                cmd=['gz', 'sim', '-g', '-v', '2'],
+                output='screen',
+                additional_env={
+                    'LIBGL_ALWAYS_SOFTWARE': '1',
+                    'QT_OPENGL': 'software',
+                    'GALLIUM_DRIVER': 'llvmpipe',
+                },
+                condition=IfCondition(use_gazebo_gui),
+            )
+        ],
     )
 
     # ── Spawn robot into Gazebo ───────────────────────────────────────
@@ -108,6 +131,27 @@ def generate_launch_description():
         executable='parameter_bridge',
         output='screen',
         arguments=['/cmd_vel@geometry_msgs/msg/Twist]gz.msgs.Twist'],
+    )
+
+    bridge_odom = Node(
+        package='ros_gz_bridge',
+        executable='parameter_bridge',
+        output='screen',
+        arguments=['/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry'],
+    )
+
+    # Publish the missing odom -> base_footprint TF link from the bridged odometry
+    # so the whole robot tree is connected when RViz uses odom as the fixed frame.
+    odom_tf_broadcaster_node = Node(
+        package='audix',
+        executable='odom_tf_broadcaster.py',
+        output='screen',
+        parameters=[
+            {'use_sim_time': True},
+            {'odom_topic': '/odom'},
+            {'odom_frame': 'odom'},
+            {'base_frame': 'base_footprint'},
+        ],
     )
 
     # ── Controller spawners ───────────────────────────────────────────
@@ -199,6 +243,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2'),
+        DeclareLaunchArgument('use_gazebo_gui', default_value='true', description='Launch Gazebo GUI client'),
         DeclareLaunchArgument('use_slider_gui', default_value='true', description='Launch scissor slider GUI'),
         DeclareLaunchArgument(
             'world_file',
@@ -213,12 +258,16 @@ def generate_launch_description():
 
         gz_resource_path,
         ign_resource_path,
+        fastdds_transport,
         gazebo,
+        gazebo_gui,
         robot_state_publisher_node,
         spawn_entity,
         world_to_odom_node,
         bridge_clock,
         bridge_cmd_vel,
+        bridge_odom,
+        odom_tf_broadcaster_node,
         start_jsb_after_spawn,
         start_scissor_after_jsb,
         start_mapper_after_controller,

@@ -21,6 +21,7 @@ install(
 		scripts/mecanum_kinematics.py
 		scripts/mission_controller.py
 		scripts/obstacle_avoidance.py
+		scripts/odom_tf_broadcaster.py
 		scripts/scissor_lift_mapper.py
 		scripts/scissor_slider_gui.py
 		scripts/start_stop_node.py

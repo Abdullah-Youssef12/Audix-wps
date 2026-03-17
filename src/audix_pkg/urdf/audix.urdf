@@ -105,6 +105,9 @@
       link="front_left_wheel_link" />
     <axis
       xyz="0 0 -1" />
+    <dynamics
+      damping="2.5"
+      friction="1.0" />
   </joint>
   <link
     name="front_right_wheel_link">
@@ -158,6 +161,9 @@
       link="front_right_wheel_link" />
     <axis
       xyz="0 0 -1" />
+    <dynamics
+      damping="2.5"
+      friction="1.0" />
   </joint>
   <link
     name="back_right_wheel_link">
@@ -211,6 +217,9 @@
       link="back_right_wheel_link" />
     <axis
       xyz="0 0 -1" />
+    <dynamics
+      damping="2.5"
+      friction="1.0" />
   </joint>
   <link
     name="back_left_wheel_link">
@@ -264,6 +273,9 @@
       link="back_left_wheel_link" />
     <axis
       xyz="0 0 -1" />
+    <dynamics
+      damping="2.5"
+      friction="1.0" />
   </joint>
   <link
     name="scissors_lift_base">

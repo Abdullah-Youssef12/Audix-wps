@@ -3,5 +3,5 @@ install/
 log/
 __pycache__/
 *.pyc
-command.txt/
-
+command.txt
+.vscode/

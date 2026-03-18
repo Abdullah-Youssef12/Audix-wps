@@ -1,119 +1,93 @@
-# Audix ROS2 Simulation Workspace
+# Audix ROS2 Jazzy Workspace
 
-## Project Status (Where We Reached)
-This workspace has been migrated to ROS 2 (Jazzy) with Gazebo (ros_gz) and is currently running a working simulation pipeline for the Audix robot.
+This repository contains the Audix warehouse robot simulation stack on ROS 2 Jazzy and Gazebo Harmonic.
 
-Implemented so far:
-- ROS 2 package setup with `ament_cmake` and install rules.
-- Gazebo simulation launch with world loading and robot spawning.
-- URDF integration with `robot_state_publisher`.
-- `ros_gz_bridge` topic bridges for clock, odometry, joint states, IMU, lidar scan, and velocity command.
-- `ros2_control` + `diff_drive_controller` integration.
-- EKF localization node (`robot_localization`) enabled for fused state estimation.
-- RViz launch and default visualization config.
-- Initial behavior scripts for obstacle avoidance and waypoint motion.
+## Current Canonical Stack
+- Package name: `audix` (source folder: `src/audix_pkg`)
+- Main launch: `midterm.launch.py`
+- Gazebo world used by midterm launch: `world/debug_empty.sdf`
+- Robot launch base: `scissor_gazebo.launch.py`
+- Localization: `robot_localization` EKF (`config/ekf.yaml`)
+- Mission node: `scripts/mission_controller.py`
 
-Current known scope:
-- Main drivetrain currently behaves as differential drive in simulation.
-- Team roadmap below includes planned migration/tuning toward mecanum-specific behavior and a fuller warehouse-like environment.
-
-## Quick Start
-Use these commands from the repository root:
+## Build
+Run from repository root:
 
 ```bash
+cd /home/hiddenlegend07/Audix_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select audix
+colcon build --symlink-install --packages-select audix
 source install/setup.bash
 ```
 
-Launch Gazebo simulation:
+## Reliable Launch (Recommended)
+This command launches Gazebo + RViz + navigation stack and starts mission automatically.
 
 ```bash
-ros2 launch audix robot_gazebo.launch.py
+cd /home/hiddenlegend07/Audix_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch audix midterm.launch.py use_rviz:=true use_slider_gui:=false run_navigation:=true run_cardinal_test:=false auto_start:=true auto_send_goal:=true
 ```
 
-Launch RViz visualization-only flow:
+## Manual Mission Start Mode
+Use this when you want the simulation to launch and wait in IDLE until you trigger it.
 
 ```bash
-ros2 launch audix display_rviz.launch.py
+cd /home/hiddenlegend07/Audix_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch audix midterm.launch.py use_rviz:=true use_slider_gui:=false run_navigation:=true run_cardinal_test:=false auto_start:=false auto_send_goal:=false
 ```
 
-## What Each Launch File Does
-- `src/audix_pkg/launch/robot_gazebo.launch.py`
-  - Main simulation entrypoint.
-  - Starts Gazebo, robot state publisher, bridges, robot spawn, and EKF.
-- `src/audix_pkg/launch/gazebo.launch.py`
-  - Wrapper that includes `robot_gazebo.launch.py`.
-- `src/audix_pkg/launch/display_rviz.launch.py`
-  - RViz-focused launch (URDF, joint state publisher/gui, robot state publisher, RViz2).
-- `src/audix_pkg/launch/display.launch.py`
-  - Wrapper that includes `display_rviz.launch.py`.
+Then trigger mission manually from another terminal:
 
-## Config and World Files (High-Level)
-- `src/audix_pkg/config/controllers.yaml`
-  - Controller manager and drive controller parameters (wheel names, geometry, limits, cmd format).
+```bash
+cd /home/hiddenlegend07/Audix_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 topic pub /robot_enable std_msgs/msg/Bool "{data: true}" --once
+ros2 service call /send_mission std_srvs/srv/Trigger "{}"
+```
+
+## Stop Everything
+Use this whenever stale processes cause inconsistent behavior.
+
+```bash
+pkill -9 -f "ros2|gz sim|gzserver|gzclient|rviz2|parameter_bridge|static_transform_publisher|robot_state_publisher|controller_manager|spawner|joint_state_publisher|scissor_lift_mapper|odom_tf_broadcaster|mission_controller|start_stop_node|goal_sender_node|cardinal_motion_debug|waypoints|audix" || true
+```
+
+## Quick Health Checks
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/hiddenlegend07/Audix_ws/install/setup.bash
+ros2 topic info /clock
+ros2 topic echo /joint_states --once
+ros2 topic echo /cmd_vel --once
+```
+
+Expected behavior:
+- `/clock` has at least 1 publisher while sim is running.
+- `/joint_states` publishes robot joints after spawn.
+- `/cmd_vel` stays zero in IDLE and becomes non-zero after mission starts.
+
+## Known Gotchas
+- `midterm.launch.py` defaults: `run_navigation:=false`, `auto_start:=false`, `auto_send_goal:=false`.
+  - If you launch with defaults, robot will not autonomously move.
+- If mission stays in IDLE, you must publish `/robot_enable` and call `/send_mission`.
+- Multiple leftover launch processes can break timing and TF behavior. Use the kill-all command before relaunching.
+- On the current main branch, keep `run_cardinal_test:=false` unless you intentionally want the cardinal debug run.
+
+## Important Paths
+- `src/audix_pkg/launch/midterm.launch.py`
+- `src/audix_pkg/launch/scissor_gazebo.launch.py`
+- `src/audix_pkg/scripts/mission_controller.py`
+- `src/audix_pkg/config/mission_params.yaml`
 - `src/audix_pkg/config/ekf.yaml`
-  - EKF fusion settings (odom + IMU) and TF publishing behavior.
-- `src/audix_pkg/rviz/config.rviz`
-  - Default RViz display layout and fixed frame.
-- `src/audix_pkg/world/my_world.sdf`
-  - Main simulation world (ground plane, lighting, example obstacle, physics/sensor systems).
-- `src/audix_pkg/world/empty_world.sdf`
-  - Minimal baseline world variant.
+- `src/audix_pkg/world/debug_empty.sdf`
 
-## Simulation Pipeline Overview
-1. Build and source the workspace.
-2. Launch Gazebo world.
-3. Publish robot URDF to `robot_description`.
-4. Spawn robot entity in Gazebo from `robot_description`.
-5. Bridge Gazebo/ROS topics (`/clock`, `/odom`, `/imu`, `/scan`, `/joint_states`, `/cmd_vel`).
-6. Run control and localization (`ros2_control`, diff drive, EKF).
-7. Optionally visualize in RViz.
-
-## Team Roadmap (Organized TODO)
-
-### A. Robot Frames, Geometry, and Spawn Accuracy
-1. Make `RobotBody` coincide with the robot CG (not a corner/reference artifact).
-2. Update spawn height so robot starts above the floor by the CG-to-lowest-wheel-point offset.
-3. Add dedicated IR sensor frames in SolidWorks and keep URDF frame mapping consistent.
-4. Add a frame at the exact IMU location for accurate simulation alignment (IMU frame can differ from CG).
-5. Simplify RViz defaults by hiding extra mechanism links that reduce readability.
-
-### B. Mecanum Drivetrain Study and Motion Mapping
-1. Study mecanum wheel kinematics and control requirements.
-2. Define and validate motion mapping for: forward, backward, left, right, rotate, and combined steering.
-3. Ensure controller architecture supports mecanum behavior instead of diff-drive assumptions where needed.
-
-### C. Environment and Obstacles
-1. Define dynamic obstacle strategy:
-   - How many obstacles.
-   - Spawning method.
-   - Motion behavior and test scenarios.
-2. Design shelves and inventory layout to match the expected real environment.
-3. Build the full Gazebo environment to reflect expected operational conditions.
-
-### D. Controls, Scripts, and Mechanism Automation
-1. Decide what extra scripts are required and how customizable the GUI/control interface should be.
-2. Integrate scissor-lift motion mapping (from MATLAB) into an automation script:
-   - Camera height command in.
-   - Coordinated link motion out.
-
-### E. Midterm Planning and Validation Scope
-1. Prepare a clear checklist of all midterm deliverables and acceptance criteria.
-2. Decide perception scope:
-   - Whether camera sensing/object detection is required in simulation.
-   - Required reactions/behaviors if detection is enabled.
-
-### F. Data, Calibration, and Visual Fidelity
-1. Collect and track all key dimensions, speeds, and relevant physical parameters to improve simulation accuracy.
-2. Apply robot coloring/material styling for clearer visualization and team demos.
-
-## Editing Guidance (For Future Team Members)
-- Adjust drivetrain and controller behavior in `config/controllers.yaml` and matching wheel/joint definitions in URDF.
-- Update localization behavior in `config/ekf.yaml`.
-- Modify world geometry and obstacles in `world/my_world.sdf`.
-- Keep frame naming consistent across SolidWorks export, URDF, controllers, and RViz.
-- After any change:
-  1. Rebuild package.
-  2. Re-source `install/setup.bash`.
-  3. Relaunch and validate topics/TF.
+## Team Notes
+- Keep waypoints and thresholds in `mission_params.yaml` (do not hardcode in Python).
+- Keep `use_sim_time: True` for simulation nodes.
+- Do not modify files under `meshes/`.

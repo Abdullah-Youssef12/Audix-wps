@@ -23,11 +23,17 @@ mission_controller:
     reroute_side_clear_hysteresis: 0.03  # m extra margin before a side is considered safely clear again
     reroute_side_clear_cycles: 6     # consecutive control cycles with side clearance before rejoin
     obstacle_halt_timeout: 3.0       # s to wait after detection before deciding to reroute
+    obstacle_safety_margin: 0.06     # m footprint inflation around sensed obstacle envelope
+    obstacle_path_corridor_margin: 0.03  # m extra swept-path corridor width for IR path blocking
+    obstacle_envelope_cone_gain: 0.60    # scales cone-width inflation so off-axis hits still grow a realistic envelope
     reroute_return_tolerance: 0.05   # m tolerance to consider path line rejoined
+    obstacle_return_tolerance: 0.02  # m tighter lateral tolerance used during offset/rejoin transitions
     reroute_timeout: 20.0            # s maximum reroute duration
     obstacle_sensor_warmup_sec: 2.0  # ignore startup sensor transients
     ir_filter_alpha_rise: 0.18       # slower rise so sudden clear readings need confirmation
     ir_filter_alpha_fall: 0.70       # faster fall so approaching obstacles are trusted quickly
+    optimized_rejoin_min_lookahead: 0.04  # m minimum forward bias when obstacle vanishes during reroute
+    optimized_rejoin_lateral_gain: 0.35   # scales lookahead down as the robot gets closer to the centerline
 
     # --- Scissor lift ---
     lift_dwell_time: 2.0           # seconds to hold at scan height

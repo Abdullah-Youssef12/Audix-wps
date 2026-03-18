@@ -381,6 +381,21 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /debug/robot_path
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: WaypointMarkers
+      Namespaces:
+        mission_labels: true
+        mission_state: true
+        mission_targets: true
+        reroute_targets: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /debug/targets
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

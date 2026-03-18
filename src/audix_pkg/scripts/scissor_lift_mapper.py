@@ -16,23 +16,18 @@ class ScissorLiftMapper(Node):
         super().__init__('scissor_lift_mapper')
 
         # Slider input is expected in [0.0, 1.0] (GUI publishes percent/100).
-        # Mapping is defined as DELTAS from the baseline pose captured at startup.
-        # This ensures the motion is exactly the requested travel/angles regardless
-        # of the current joint state when the node starts.
+        # This model does not solve the scissor linkage passively, so the full
+        # coordinated joint pose still has to be commanded explicitly.
         deg40 = math.radians(40.0)
         deg80 = math.radians(80.0)
 
-        # Order is aligned with controllers.yaml scissor_position_controller.joints.
         self._delta_at_full = {
-            # Prismatic stroke: +40.14 mm
             'bottom_stud_joint': 0.04014,
             'top_stud_joint': 0.0,
-            # Replace 30deg (0.522 rad) with 40deg
             'left_joint1': deg40,
             'right_joint1': deg40,
             'left_joint2': deg40,
             'right_joint2': deg40,
-            # Replace 60deg (1.044 rad) with 80deg (preserve signs)
             'left_joint3': -deg80,
             'right_joint3': -deg80,
             'left_joint4': deg80,
@@ -46,9 +41,12 @@ class ScissorLiftMapper(Node):
 
         self._joint_order = list(self._delta_at_full.keys())
         self._latest_slider = 0.0
+        self._last_published_slider = None
+        self._command_dirty = True
 
         self._baseline_joint_positions = None
         self._joint_limits = self._load_joint_limits()
+        self._baseline_ready_logged = False
 
         self.slider_sub = self.create_subscription(
             Float64,
@@ -86,16 +84,20 @@ class ScissorLiftMapper(Node):
             10,
         )
 
-        # Republish at a fixed rate so Gazebo controller always has a fresh command.
+        # Publish only when the desired command changes. Reasserting the exact same
+        # target every 50 ms makes the lift hunt around the setpoint in simulation.
         self.timer = self.create_timer(0.05, self.publish_mapped_command)
 
         self.get_logger().info(
             'Scissor mapper ready. Send Float64 slider to /scissor_lift/slider in [0, 1]. '
-            'Mapping: baseline + slider * requested deltas (40.14mm stroke, 40deg/80deg joints).'
+            'Mapping: baseline + coordinated scissor deltas for the full lift stroke.'
         )
 
     def slider_callback(self, msg: Float64) -> None:
-        self._latest_slider = max(0.0, min(1.0, float(msg.data)))
+        slider = max(0.0, min(1.0, float(msg.data)))
+        if abs(slider - self._latest_slider) > 1e-6:
+            self._latest_slider = slider
+            self._command_dirty = True
 
     def joint_state_callback(self, msg: JointState) -> None:
         if self._baseline_joint_positions is not None:
@@ -107,18 +109,31 @@ class ScissorLiftMapper(Node):
             if joint_name in name_to_pos:
                 baseline[joint_name] = float(name_to_pos[joint_name])
 
-        # Only lock baseline once we have at least the primary prismatic joint.
-        if 'bottom_stud_joint' in baseline:
+        # Lock baseline only after all controlled joints are available. Capturing a
+        # partial baseline makes the lift jump and bounce around zero.
+        if len(baseline) == len(self._joint_order):
             self._baseline_joint_positions = baseline
+            self._command_dirty = True
+            if not self._baseline_ready_logged:
+                self.get_logger().info('Scissor mapper baseline captured from full joint state set.')
+                self._baseline_ready_logged = True
 
     def legacy_stroke_callback(self, msg: Float64) -> None:
         # Back-compat: treat legacy command as "slider" in [0, 1].
-        self._latest_slider = max(0.0, min(1.0, float(msg.data)))
+        slider = max(0.0, min(1.0, float(msg.data)))
+        if abs(slider - self._latest_slider) > 1e-6:
+            self._latest_slider = slider
+            self._command_dirty = True
 
     def publish_mapped_command(self) -> None:
+        if self._baseline_joint_positions is None:
+            return
+        if not self._command_dirty:
+            return
+
         slider = self._latest_slider
 
-        baseline = self._baseline_joint_positions or {}
+        baseline = self._baseline_joint_positions
 
         # Linear mapping:
         # - slider=0.0 -> baseline pose (current pose treated as "zero")
@@ -140,6 +155,8 @@ class ScissorLiftMapper(Node):
         msg = Float64MultiArray()
         msg.data = commands
         self.cmd_publisher.publish(msg)
+        self._last_published_slider = slider
+        self._command_dirty = False
 
     def _load_joint_limits(self) -> dict:
         """Returns {joint_name: (lower, upper)} for controlled joints that define limits."""

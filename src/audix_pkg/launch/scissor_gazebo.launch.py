@@ -25,7 +25,6 @@ def generate_launch_description():
     model_path = os.path.join(pkg_share, 'urdf', 'audix.urdf')
     rviz_config = os.path.join(pkg_share, 'rviz', 'config.rviz')
     controllers_yaml = os.path.join(pkg_share, 'config', 'controllers.yaml')
-
     world_file_path = LaunchConfiguration('world_file')
     world_name = LaunchConfiguration('world_name')
     spawn_x = LaunchConfiguration('spawn_x')
@@ -92,9 +91,7 @@ def generate_launch_description():
                 cmd=['gz', 'sim', '-g', '-v', '2'],
                 output='screen',
                 additional_env={
-                    'LIBGL_ALWAYS_SOFTWARE': '1',
-                    'QT_OPENGL': 'software',
-                    'GALLIUM_DRIVER': 'llvmpipe',
+                    'LIBGL_ALWAYS_SOFTWARE': '0',
                 },
                 condition=IfCondition(use_gazebo_gui),
             )
@@ -161,7 +158,6 @@ def generate_launch_description():
     # joint_state_broadcaster  → publishes /joint_states → RSP → TF  ✅
     # Wheel motion is handled by Gazebo VelocityControl plugin (cmd_vel).
     # scissor_position_controller → subscribes /scissor_position_controller/commands
-    #                               (Float64MultiArray), moves scissor+camera joints
     joint_state_broadcaster_spawner = Node(
         package='controller_manager',
         executable='spawner',
@@ -230,7 +226,9 @@ def generate_launch_description():
     start_scissor_after_jsb = RegisterEventHandler(
         OnProcessExit(
             target_action=joint_state_broadcaster_spawner,
-            on_exit=[scissor_controller_spawner],
+            on_exit=[
+                scissor_controller_spawner,
+            ],
         )
     )
 

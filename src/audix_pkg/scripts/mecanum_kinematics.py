@@ -33,15 +33,18 @@ class MecanumKinematics(Node):
         self.declare_parameter('wheel_base_half', 0.09)
         self.declare_parameter('track_width_half', 0.1574)
         self.declare_parameter('robot_body_frame_flip_180', True)
+        self.declare_parameter('publish_odom', False)
 
         self.r = self.get_parameter('wheel_radius').value
         self.lx = self.get_parameter('wheel_base_half').value
         self.ly = self.get_parameter('track_width_half').value
         self.flip_180 = self.get_parameter('robot_body_frame_flip_180').value
+        self.publish_odom = bool(self.get_parameter('publish_odom').value)
 
         # Subscribers
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_cb, 10)
-        self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 10)
+        if self.publish_odom:
+            self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 10)
 
         # Publishers
         self.wheel_pub = self.create_publisher(
@@ -49,7 +52,7 @@ class MecanumKinematics(Node):
             '/mecanum_velocity_controller/commands',
             10
         )
-        self.odom_pub = self.create_publisher(Odometry, '/mecanum_odom', 10)
+        self.odom_pub = self.create_publisher(Odometry, '/mecanum_odom', 10) if self.publish_odom else None
 
         # Odometry state
         self.x = 0.0
@@ -84,11 +87,11 @@ class MecanumKinematics(Node):
 
         k = self.lx + self.ly
 
-        # Mecanum IK (wheel angular velocities in rad/s)
-        w_fl = (1.0 / self.r) * (vx - vy - k * wz)
-        w_fr = (1.0 / self.r) * (vx + vy + k * wz)
-        w_bl = (1.0 / self.r) * (vx + vy - k * wz)
-        w_br = (1.0 / self.r) * (vx - vy + k * wz)
+        # Mecanum IK for O-wheel roller orientation (wheel angular velocities in rad/s)
+        w_fl = (1.0 / self.r) * (vx + vy - k * wz)
+        w_fr = (1.0 / self.r) * (vx - vy + k * wz)
+        w_bl = (1.0 / self.r) * (vx - vy - k * wz)
+        w_br = (1.0 / self.r) * (vx + vy + k * wz)
 
         cmd = Float64MultiArray()
         cmd.data = [w_fl, w_fr, w_bl, w_br]
@@ -96,6 +99,9 @@ class MecanumKinematics(Node):
 
     def joint_state_cb(self, msg: JointState):
         """Forward kinematics from wheel velocities -> odometry."""
+        if not self.publish_odom or self.odom_pub is None:
+            return
+
         now = self.get_clock().now()
         if self.last_time is None:
             self.last_time = now

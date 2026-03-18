@@ -67,7 +67,6 @@ def generate_launch_description():
         executable='parameter_bridge',
         output='screen',
         arguments=[
-            '/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry',
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
             '/ir_front/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/ir_front_left/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',

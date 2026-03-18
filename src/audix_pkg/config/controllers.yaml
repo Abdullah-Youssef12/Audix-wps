@@ -6,8 +6,20 @@ controller_manager:
       type: joint_state_broadcaster/JointStateBroadcaster
       use_local_topics: true
 
+    mecanum_velocity_controller:
+      type: forward_command_controller/ForwardCommandController
+
     scissor_position_controller:
       type: forward_command_controller/ForwardCommandController
+
+mecanum_velocity_controller:
+  ros__parameters:
+    joints:
+      - front_left_wheel_joint
+      - front_right_wheel_joint
+      - back_left_wheel_joint
+      - back_right_wheel_joint
+    interface_name: velocity
 
 scissor_position_controller:
   ros__parameters:

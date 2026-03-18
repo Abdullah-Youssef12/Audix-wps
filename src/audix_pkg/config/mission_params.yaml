@@ -12,30 +12,30 @@ mission_controller:
     obstacle_side_min: 0.15          # m — minimum allowed side/back clearance
     front_blocked_threshold: 3       # consecutive blocked cycles before halting
     clear_threshold: 5               # consecutive clear cycles before resuming
-    reroute_strafe_speed: 0.16       # m/s lateral reroute speed
-    reroute_creep_speed: 0.11        # m/s forward creep during reroute
+    reroute_strafe_speed: 0.24       # m/s lateral reroute speed
+    reroute_creep_speed: 0.18        # m/s forward creep during reroute
     reroute_lateral_distance: 0.42   # m target offset from the original path centerline
     reroute_advance_distance: 0.45   # m strafe/advance distance for bypass box
     reroute_return_lookahead: 0.18   # m forward lookahead while rejoining the path
     reroute_rejoin_extra_distance: 0.30  # m additional forward pass before rejoin is allowed
     reroute_side_clearance: 0.20     # m required obstacle-side IR clearance before rejoin
     reroute_side_clear_cycles: 6     # consecutive control cycles with side clearance before rejoin
-    obstacle_halt_timeout: 2.5       # s to wait after stopping before starting reroute
+    obstacle_halt_timeout: 3.0       # s to wait after detection before deciding to reroute
     reroute_return_tolerance: 0.05   # m tolerance to consider path line rejoined
     reroute_timeout: 20.0            # s maximum reroute duration
     obstacle_sensor_warmup_sec: 2.0  # ignore startup sensor transients
 
     # --- Scissor lift ---
-    lift_dwell_time: 3.0           # seconds to hold at scan height
+    lift_dwell_time: 2.0           # seconds to hold at scan height
     lift_position_tolerance: 0.003 # m — when to consider lift at target
     lift_motion_time: 2.0          # seconds to allow lift motion up/down
 
     # --- Navigation tuning ---
     linear_kp: 0.5
     angular_kp: 1.5
-    scan_angle_tolerance: 0.08      # rad tolerance for scan/return turns
+    scan_angle_tolerance: 0.12      # rad tolerance for scan/return turns
     scan_rotation_kp_scale: 1.6    # multiplier for faster scan/return rotations
-    scan_rotation_min_speed: 0.12  # rad/s minimum turn speed to avoid stalling
+    scan_rotation_min_speed: 0.25  # rad/s minimum turn speed to avoid stalling
     scan_rotation_max_speed: 1.0   # rad/s cap for scan/return rotations
     max_linear_speed: 0.3          # m/s
     max_angular_speed: 1.0         # rad/s
@@ -48,7 +48,7 @@ mission_controller:
     end_goal_distance: 4.0
     scan_use_lift: true
     straight_line_only: true
-    straight_line_distance: 3.2
+    straight_line_distance: 7.2
     straight_line_lift_height: 0.271   # ~80% of 0.3383 m max lift height
     enable_obstacle_avoidance: true
     enable_stop_scan: true

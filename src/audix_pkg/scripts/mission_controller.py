@@ -15,6 +15,7 @@ Receives mission goals via /send_mission service.
 """
 
 import math
+import subprocess
 from enum import Enum, auto
 
 import numpy as np
@@ -84,6 +85,9 @@ class MissionController(Node):
         self.declare_parameter('obstacle_halt_timeout', 2.5)
         self.declare_parameter('reroute_timeout', 12.0)
         self.declare_parameter('obstacle_sensor_warmup_sec', 2.0)
+        self.declare_parameter('obstacle_half_size', 0.05)
+        self.declare_parameter('obstacle_safety_margin', 0.06)
+        self.declare_parameter('obstacle_return_tolerance', 0.02)
         self.declare_parameter('lift_dwell_time', 3.0)
         self.declare_parameter('lift_position_tolerance', 0.003)
         self.declare_parameter('lift_motion_time', 2.0)
@@ -137,6 +141,9 @@ class MissionController(Node):
         self.obstacle_halt_timeout = float(self.get_parameter('obstacle_halt_timeout').value)
         self.reroute_timeout = float(self.get_parameter('reroute_timeout').value)
         self.obstacle_warmup = self.get_parameter('obstacle_sensor_warmup_sec').value
+        self.obstacle_half_size = float(self.get_parameter('obstacle_half_size').value)
+        self.obstacle_safety_margin = float(self.get_parameter('obstacle_safety_margin').value)
+        self.obstacle_return_tolerance = float(self.get_parameter('obstacle_return_tolerance').value)
         self.lift_dwell = self.get_parameter('lift_dwell_time').value
         self.lift_tol = self.get_parameter('lift_position_tolerance').value
         self.lift_motion_time = float(self.get_parameter('lift_motion_time').value)
@@ -220,14 +227,52 @@ class MissionController(Node):
         self.path_line_start = None
         self.path_line_end = None
         self.node_start_time = self.get_clock().now()
+        self.mission_start_center = (0.0, 0.0)
+        self.mission_start_yaw = 0.0
+        self.active_scan_direction = self.scan_turn_direction
+        self.active_scan_dwell = self.lift_dwell
+        self.waypoint_scan_directions = []
+        self.waypoint_scan_dwell_times = []
+        self.waypoint_lift_targets = []
+        self.waypoint_parking_headings = {}
+        self.leg_profiles = []
+        self.active_leg_profile = None
+        self.pending_obstacle_removals = []
+        self.parking_mode = False
+        self.active_leg_spawned = False
+        self.active_leg_trigger_progress = None
+        self.post_lift_state = None
+        self.use_resume_heading_for_target_rotate = False
+        self.reroute_plan_optimized = False
+        self.reroute_target_offset = 0.0
+        self.reroute_required_pass_distance = 0.0
+        self.reroute_obstacle_side = None
+        self.reroute_trigger_sensor = None
 
         # Lift state
         self.current_lift_pos = 0.0
         self.target_lift_pos = 0.0
+        self.lift_motion_start_time = None
+        self.lift_motion_start_pos = 0.0
+        self.current_planar_speed = 0.0
         self.scan_start_time = None
         self.scan_heading_target = 0.0
         self.resume_heading_target = 0.0
         self.scan_waypoint_indices = set()
+
+        self.sensor_positions = {
+            'back': (0.00389, -0.15402),
+            'right': (-0.15593, 0.00425),
+            'front_right': (-0.33619, -0.02391),
+            'front': (-0.36061, -0.14597),
+            'front_left': (-0.34189, -0.27041),
+            'left': (-0.16403, -0.30425),
+        }
+        self.front_extent = abs(self.sensor_positions['front'][0] - self.robot_center_offset_x)
+        self.back_extent = abs(self.sensor_positions['back'][0] - self.robot_center_offset_x)
+        self.left_extent = abs(self.sensor_positions['left'][1] - self.robot_center_offset_y)
+        self.right_extent = abs(self.sensor_positions['right'][1] - self.robot_center_offset_y)
+        self.robot_length = self.front_extent + self.back_extent
 
         # Debug visualization state
         self.robot_path_points = []
@@ -305,6 +350,10 @@ class MissionController(Node):
         _, _, yaw = _euler_from_quat(q.x, q.y, q.z, q.w)
         self.yaw = yaw
         self.center_x, self.center_y = self._center_xy(self.x, self.y, self.yaw)
+        self.current_planar_speed = math.hypot(
+            msg.twist.twist.linear.x,
+            msg.twist.twist.linear.y,
+        )
 
     def _imu_cb(self, msg: Imu):
         pass  # EKF handles IMU fusion; kept for potential direct use
@@ -335,6 +384,214 @@ class MissionController(Node):
             response.message = 'No waypoints in parameters'
             self.get_logger().error(response.message)
         return response
+
+    def _service_pending_obstacle_removals(self):
+        if not self.pending_obstacle_removals:
+            return
+
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        remaining = []
+        for item in self.pending_obstacle_removals:
+            if now_sec >= item['time']:
+                self._remove_obstacle(item['name'])
+            else:
+                remaining.append(item)
+        self.pending_obstacle_removals = remaining
+
+    def _schedule_obstacle_removal(self, name, delay_sec):
+        if not name:
+            return
+        now_sec = self.get_clock().now().nanoseconds / 1e9
+        for item in self.pending_obstacle_removals:
+            if item['name'] == name:
+                return
+        self.pending_obstacle_removals.append({'name': name, 'time': now_sec + delay_sec})
+
+    def _spawn_box_obstacle(self, profile):
+        name = profile['name']
+        x, y = profile['pose']
+        sx, sy, sz = profile.get('size', (0.14, 0.14, 0.24))
+        rgba = profile.get('color', (0.15, 0.75, 0.95, 1.0))
+        sdf = (
+            f'<sdf version="1.8">'
+            f'<model name="{name}">'
+            f'<static>true</static>'
+            f'<pose>0 0 0 0 0 0</pose>'
+            f'<link name="link">'
+            f'<collision name="collision"><geometry><box><size>{sx} {sy} {sz}</size></box></geometry></collision>'
+            f'<visual name="visual"><geometry><box><size>{sx} {sy} {sz}</size></box></geometry>'
+            f'<material><ambient>{rgba[0]} {rgba[1]} {rgba[2]} {rgba[3]}</ambient>'
+            f'<diffuse>{rgba[0]} {rgba[1]} {rgba[2]} {rgba[3]}</diffuse></material></visual>'
+            f'</link></model></sdf>'
+        )
+        result = subprocess.run(
+            [
+                'ros2', 'run', 'ros_gz_sim', 'create',
+                '-world', 'warehouse',
+                '-name', name,
+                '-string', sdf,
+                '-x', str(x), '-y', str(y), '-z', str(sz * 0.5),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            self.get_logger().info(f'Spawned obstacle {name} at ({x:.2f}, {y:.2f})')
+        else:
+            self.get_logger().warn(
+                f'Failed to spawn obstacle {name}: {(result.stderr or result.stdout).strip()}'
+            )
+
+    def _remove_obstacle(self, name):
+        result = subprocess.run(
+            [
+                'gz', 'service',
+                '-s', '/world/warehouse/remove',
+                '--reqtype', 'gz.msgs.Entity',
+                '--reptype', 'gz.msgs.Boolean',
+                '--timeout', '3000',
+                '--req', f'name: "{name}" type: MODEL',
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0 and 'data: true' in result.stdout:
+            self.get_logger().info(f'Removed obstacle {name}')
+            if (
+                self.active_leg_profile
+                and self.active_leg_profile.get('name') == name
+                and self.state == State.OBSTACLE_REROUTE
+            ):
+                self._optimize_reroute_plan_from_current_pose(
+                    'Obstacle vanished during reroute — optimizing back onto the original path'
+                )
+        elif result.returncode != 0:
+            self.get_logger().warn(
+                f'Failed removing obstacle {name}: {(result.stderr or result.stdout).strip()}'
+            )
+
+    def _clear_dynamic_obstacles(self):
+        for name in ('dynamic_obstacle_seg2', 'dynamic_obstacle_seg3'):
+            self._remove_obstacle(name)
+        self.pending_obstacle_removals = []
+
+    def _scan_enabled_for_waypoint(self, idx):
+        return idx in self.scan_waypoint_indices and idx < len(self.waypoint_lift_targets)
+
+    def _lift_target_for_waypoint(self, idx):
+        if idx < len(self.waypoint_lift_targets):
+            return self.waypoint_lift_targets[idx]
+        return 0.0
+
+    def _scan_direction_for_waypoint(self, idx):
+        if idx < len(self.waypoint_scan_directions):
+            return self.waypoint_scan_directions[idx]
+        return self.scan_turn_direction
+
+    def _scan_dwell_for_waypoint(self, idx):
+        if idx < len(self.waypoint_scan_dwell_times):
+            return self.waypoint_scan_dwell_times[idx]
+        return self.lift_dwell
+
+    def _parking_heading_for_waypoint(self, idx):
+        return self.waypoint_parking_headings.get(idx)
+
+    def _activate_leg(self, idx):
+        self.active_leg_profile = self.leg_profiles[idx] if idx < len(self.leg_profiles) else None
+        self.active_leg_spawned = False
+        self.active_leg_trigger_progress = None
+        profile = self.active_leg_profile
+        if profile and profile.get('surprise_spawn'):
+            leg_length = math.hypot(
+                self.path_line_end[0] - self.path_line_start[0],
+                self.path_line_end[1] - self.path_line_start[1],
+            )
+            self.active_leg_trigger_progress = max(
+                0.65,
+                min(1.20, 0.35 * leg_length),
+            )
+            return
+        if profile and profile.get('spawn_on_activation'):
+            if profile.get('spawn_distance_ahead') is not None:
+                tangent, _ = self._path_unit_vectors()
+                distance = float(profile['spawn_distance_ahead'])
+                profile['pose'] = (
+                    self.center_x + tangent[0] * distance,
+                    self.center_y + tangent[1] * distance,
+                )
+            self._spawn_box_obstacle(profile)
+            self.active_leg_spawned = True
+
+    def _start_waypoint_motion(self, idx):
+        self.current_wp_idx = idx
+        self.path_line_start = (self.center_x, self.center_y)
+        self.path_line_end = self.waypoints[idx][:2]
+        self.parking_mode = False
+        self._activate_leg(idx)
+        if idx == 3:
+            self.resume_heading_target = self._front_facing_heading_to(*self.waypoints[idx][:2])
+            self.use_resume_heading_for_target_rotate = True
+            self.state = State.ROTATE_TO_TARGET
+            self.get_logger().info('Starting return leg — rotating onto the planned path')
+            return
+        if idx >= 3:
+            self.resume_heading_target = self._front_facing_heading_to(*self.waypoints[idx][:2])
+            self.use_resume_heading_for_target_rotate = True
+            self.state = State.ROTATE_TO_TARGET
+            return
+        self.use_resume_heading_for_target_rotate = False
+        self.state = State.MOVE_FORWARD
+
+    def _advance_from_waypoint(self):
+        next_idx = self.current_wp_idx + 1
+        if next_idx < len(self.waypoints):
+            self._start_waypoint_motion(next_idx)
+            self.get_logger().info(f'Moving to waypoint {next_idx}')
+        else:
+            self.state = State.COMPLETE
+            self.get_logger().info('ALL WAYPOINTS COMPLETE!')
+
+    def _maybe_spawn_active_leg_obstacle(self):
+        profile = self.active_leg_profile
+        if not profile or self.active_leg_spawned or not profile.get('surprise_spawn'):
+            return
+        if self.state != State.MOVE_FORWARD:
+            return
+
+        current_progress = self._path_progress(self.center_x, self.center_y)
+        if self.active_leg_trigger_progress is None or current_progress < self.active_leg_trigger_progress:
+            return
+
+        size_x, size_y, _ = profile.get('size', (0.14, 0.14, 0.24))
+        obstacle_half_depth = 0.5 * max(size_x, size_y)
+        reaction_time = self.front_blocked_threshold * 0.05 + 0.20
+        current_speed = min(max(self.current_planar_speed, self.obstacle_speed_creep), self.max_lin)
+
+        shell_clearance = self.front_extent + obstacle_half_depth + self.obstacle_safety_margin
+        stopping_margin = self.obstacle_detect_distance + current_speed * reaction_time
+        surprise_distance = max(
+            0.85,
+            shell_clearance + stopping_margin + profile.get('surprise_buffer', 0.18),
+        )
+
+        target_progress = self._path_progress(*self.path_line_end)
+        remaining_progress = max(0.0, target_progress - current_progress)
+        if remaining_progress <= surprise_distance + self.pos_tol:
+            self.get_logger().warn(
+                'Skipping dynamic obstacle spawn because the remaining path is shorter than the safe spawn distance'
+            )
+            self.active_leg_spawned = True
+            return
+
+        tangent, _ = self._path_unit_vectors()
+        profile['pose'] = (
+            self.center_x + tangent[0] * surprise_distance,
+            self.center_y + tangent[1] * surprise_distance,
+        )
+        self._spawn_box_obstacle(profile)
+        self.active_leg_spawned = True
 
     # ================================================================
     # Helpers
@@ -370,25 +627,55 @@ class MissionController(Node):
     def _closest_front_obstacle(self):
         return min(self.ir['front'], self.ir['front_left'], self.ir['front_right'])
 
+    def _front_sensor_names(self):
+        return ['front', 'front_left', 'front_right']
+
+    def _side_sensor_names(self, side):
+        if side == 'left':
+            return ['front_left', 'left']
+        return ['front_right', 'right']
+
+    def _choose_trigger_sensor(self):
+        if not self._obstacle_detection_active():
+            return None
+        candidates = [
+            ('front', self.ir['front']),
+            ('front_left', self.ir['front_left']),
+            ('front_right', self.ir['front_right']),
+            ('left', self.ir['left']),
+            ('right', self.ir['right']),
+        ]
+        hits = [item for item in candidates if item[1] < self.obstacle_detect_distance]
+        if not hits:
+            return None
+        hits.sort(key=lambda item: item[1])
+        return hits[0][0]
+
+    def _obstacle_side_clear(self):
+        if self.reroute_obstacle_side is None:
+            return True
+        return all(self.ir[name] > self.reroute_side_clearance for name in self._side_sensor_names(self.reroute_obstacle_side))
+
+    def _front_path_clear(self):
+        return all(self.ir[name] > self.obstacle_detect_distance for name in self._front_sensor_names())
+
+    def _all_ir_clear(self):
+        threshold = min(self.reroute_side_clearance, self.obstacle_detect_distance)
+        return all(value > threshold for value in self.ir.values())
+
     def _obstacle_detection_active(self):
         elapsed = (self.get_clock().now() - self.node_start_time).nanoseconds / 1e9
         return elapsed >= self.obstacle_warmup
 
     def _front_obstacle_detected(self):
-        if not self._obstacle_detection_active():
-            return False
-        return self._closest_front_obstacle() < self.obstacle_detect_distance
+        return self._choose_trigger_sensor() is not None
 
     def _reset_obstacle_counters(self):
         self.front_blocked_count = 0
         self.clear_count = 0
 
     def _update_obstacle_counters(self):
-        if not self._obstacle_detection_active():
-            self._reset_obstacle_counters()
-            return
-
-        if self._front_obstacle_detected():
+        if self._choose_trigger_sensor() is not None:
             self.front_blocked_count += 1
             self.clear_count = 0
         else:
@@ -396,7 +683,7 @@ class MissionController(Node):
             self.front_blocked_count = 0
 
     def _max_allowed_speed(self):
-        closest = self._closest_front_obstacle()
+        closest = min(self.ir.values())
         if closest <= self.obstacle_danger_distance:
             return self.obstacle_speed_creep
         if closest <= self.obstacle_detect_distance:
@@ -438,6 +725,31 @@ class MissionController(Node):
         msg.data = max(0.0, min(1.0, slider_value))
         self.current_lift_pos = msg.data
         self.lift_pub.publish(msg)
+
+    def _begin_lift_motion(self, target_slider):
+        self.target_lift_pos = max(0.0, min(1.0, target_slider))
+        self.lift_motion_start_pos = self.current_lift_pos
+        self.lift_motion_start_time = self.get_clock().now()
+
+    def _step_lift_motion(self):
+        if self.lift_motion_start_time is None:
+            self._publish_lift(self.target_lift_pos)
+            return True
+
+        elapsed = (self.get_clock().now() - self.lift_motion_start_time).nanoseconds / 1e9
+        progress = 1.0 if self.lift_motion_time <= 1e-6 else max(0.0, min(1.0, elapsed / self.lift_motion_time))
+        commanded = self.lift_motion_start_pos + (self.target_lift_pos - self.lift_motion_start_pos) * progress
+        self._publish_lift(commanded)
+        if progress >= 1.0:
+            self.lift_motion_start_time = None
+            return True
+        return False
+
+    def _return_leg_heading_target(self, tx, ty):
+        return self._front_facing_heading_to(tx, ty)
+
+    def _front_facing_heading_to(self, tx, ty):
+        return self._normalize(math.atan2(ty - self.center_y, tx - self.center_x))
 
     def _make_pose(self, x, y, yaw):
         pose = PoseStamped()
@@ -627,7 +939,7 @@ class MissionController(Node):
         return clamped_height / max_height if max_height > 1e-6 else 0.0
 
     def _scan_direction_sign(self):
-        return -1.0 if self.scan_turn_direction == 'right' else 1.0
+        return -1.0 if self.active_scan_direction == 'right' else 1.0
 
     def _compute_resume_heading(self, tx, ty):
         if self.current_wp_idx + 1 < len(self.waypoints):
@@ -672,18 +984,62 @@ class MissionController(Node):
         )
 
     def _start_straight_line_mission(self):
-        tx = self.center_x - self.straight_line_distance * math.cos(self.yaw)
-        ty = self.center_y - self.straight_line_distance * math.sin(self.yaw)
-        self.waypoints = [(tx, ty, self.yaw, self.straight_line_lift_height)]
-        self.scan_waypoint_indices = {0} if self.enable_stop_scan else set()
-        self.current_wp_idx = 0
+        self._clear_dynamic_obstacles()
+        self.mission_start_center = (self.center_x, self.center_y)
+        self.mission_start_yaw = self.yaw
+        tangent = (-math.cos(self.yaw), -math.sin(self.yaw))
+        right = (tangent[1], -tangent[0])
+        first_segment_length = 1.95
+        remaining_length = max(1.0, self.straight_line_distance - first_segment_length)
+        later_segment_length = remaining_length / 2.0
+
+        def point(progress, lateral=0.0):
+            return (
+                self.mission_start_center[0] + tangent[0] * progress + right[0] * lateral,
+                self.mission_start_center[1] + tangent[1] * progress + right[1] * lateral,
+            )
+
+        seg1_end = first_segment_length
+        seg2_end = first_segment_length + later_segment_length
+        seg3_end = first_segment_length + 2.0 * later_segment_length
+
+        wp0 = point(seg1_end)
+        wp1 = point(seg2_end)
+        wp2 = point(seg3_end)
+
+        self.waypoints = [
+            (wp0[0], wp0[1], self.yaw, 0.0),
+            (wp1[0], wp1[1], self.yaw, 0.0),
+            (wp2[0], wp2[1], self.yaw, 0.0),
+        ]
+        self.scan_waypoint_indices = {0, 1, 2}
+        self.waypoint_scan_directions = ['left', 'right', 'left']
+        self.waypoint_scan_dwell_times = [2.0, 2.0, 2.0]
+        self.waypoint_lift_targets = [0.25, 0.50, 0.75]
+        self.waypoint_parking_headings = {}
+        self.leg_profiles = [
+            None,
+            {
+                'name': 'dynamic_obstacle_seg2',
+                'surprise_spawn': True,
+                'remove_after_detect': 1.8,
+                'surprise_buffer': 0.16,
+                'size': (0.14, 0.14, 0.24),
+                'color': (0.10, 0.75, 0.95, 1.0),
+            },
+            {
+                'name': 'dynamic_obstacle_seg3',
+                'surprise_spawn': True,
+                'remove_after_reroute': 3.0,
+                'surprise_buffer': 0.16,
+                'size': (0.14, 0.14, 0.24),
+                'color': (0.95, 0.70, 0.10, 1.0),
+            },
+        ]
         self.resume_heading_target = self.yaw
-        self.path_line_start = (self.center_x, self.center_y)
-        self.path_line_end = (tx, ty)
-        self.state = State.MOVE_FORWARD
+        self._start_waypoint_motion(0)
         self.get_logger().info(
-            'Mission started! Centered straight-line target set to '
-            f'({tx:.2f}, {ty:.2f})'
+            'Mission started! Three straight segments with three inspection stops are active'
         )
 
     def _status_log_cb(self):
@@ -714,6 +1070,11 @@ class MissionController(Node):
         self.reroute_rejoin_min_progress = self.reroute_start_progress
         self.reroute_side_clear_count = 0
         self.reroute_entry_time = None
+        self.reroute_plan_optimized = False
+        self.reroute_target_offset = 0.0
+        self.reroute_required_pass_distance = 0.0
+        self.reroute_obstacle_side = None
+        self.reroute_trigger_sensor = None
 
     def _point_to_line_distance(self, px, py):
         if self.path_line_start is None or self.path_line_end is None:
@@ -754,6 +1115,98 @@ class MissionController(Node):
             self.path_line_start[0] + progress * tangent[0] + lateral_offset * lateral[0],
             self.path_line_start[1] + progress * tangent[1] + lateral_offset * lateral[1],
         )
+
+    def _world_to_body_vector(self, world_x, world_y):
+        cos_y = math.cos(self.yaw)
+        sin_y = math.sin(self.yaw)
+        return (
+            world_x * cos_y + world_y * sin_y,
+            -world_x * sin_y + world_y * cos_y,
+        )
+
+    def _body_to_world_vector(self, body_x, body_y):
+        cos_y = math.cos(self.yaw)
+        sin_y = math.sin(self.yaw)
+        return (
+            body_x * cos_y - body_y * sin_y,
+            body_x * sin_y + body_y * cos_y,
+        )
+
+    def _sensor_clearance_threshold(self, sensor_name):
+        if sensor_name == 'front':
+            return self.obstacle_detect_distance + self.obstacle_safety_margin
+        if sensor_name == 'back':
+            return self.reroute_side_clearance + self.obstacle_safety_margin
+        return self.reroute_side_clearance + self.obstacle_safety_margin
+
+    def _any_sensor_inside_shell(self):
+        for sensor_name, sensor_range in self.ir.items():
+            if math.isfinite(sensor_range) and sensor_range < self._sensor_clearance_threshold(sensor_name):
+                return True
+        return False
+
+    def _all_sensors_clear_for_motion(self):
+        for sensor_name, sensor_range in self.ir.items():
+            if math.isfinite(sensor_range) and sensor_range < self._sensor_clearance_threshold(sensor_name):
+                return False
+        return True
+
+    def _sensor_repulsion_body_vector(self):
+        directions = {
+            'front': (1.0, 0.0),
+            'front_left': (1.0, 0.9),
+            'front_right': (1.0, -0.9),
+            'left': (0.0, 1.0),
+            'right': (0.0, -1.0),
+            'back': (-1.0, 0.0),
+        }
+        repulse_x = 0.0
+        repulse_y = 0.0
+        active_sensors = []
+        primary_sensor = None
+        primary_range = float('inf')
+        for sensor_name, sensor_range in self.ir.items():
+            if not math.isfinite(sensor_range):
+                continue
+            threshold = self._sensor_clearance_threshold(sensor_name)
+            if sensor_range >= threshold:
+                continue
+            urgency = (threshold - sensor_range) / max(threshold, 1e-6)
+            direction_x, direction_y = directions[sensor_name]
+            repulse_x += direction_x * urgency
+            repulse_y += direction_y * urgency
+            active_sensors.append(sensor_name)
+            if sensor_range < primary_range:
+                primary_range = sensor_range
+                primary_sensor = sensor_name
+        return repulse_x, repulse_y, active_sensors, primary_sensor
+
+    def _focused_escape_body_vector(self, sensor_name):
+        if sensor_name == 'front_left':
+            return 0.4, 1.0
+        if sensor_name == 'front_right':
+            return 0.4, -1.0
+        if sensor_name == 'left':
+            return 0.0, 1.0
+        if sensor_name == 'right':
+            return 0.0, -1.0
+        if sensor_name == 'back':
+            return -1.0, 0.0
+        left_min = min(self.ir['front_left'], self.ir['left'])
+        right_min = min(self.ir['front_right'], self.ir['right'])
+        return (0.4, 1.0) if left_min < right_min else (0.4, -1.0)
+
+    def _update_reactive_reroute_preview(self, body_vx, body_vy):
+        world_vx, world_vy = self._body_to_world_vector(body_vx, body_vy)
+        lookahead = 0.45
+        mid_x = self.center_x + world_vx * lookahead
+        mid_y = self.center_y + world_vy * lookahead
+        final_x, final_y = self.waypoints[self.current_wp_idx][:2]
+        self.reroute_waypoints = [
+            (self.center_x, self.center_y),
+            (mid_x, mid_y),
+            (final_x, final_y),
+        ]
 
     def _front_arc_clear(self):
         return min(self.ir['front'], self.ir['front_left'], self.ir['front_right']) > self.obstacle_detect_distance
@@ -821,40 +1274,78 @@ class MissionController(Node):
         self.state = State.OBSTACLE_HALT
         self.reroute_entry_time = self.get_clock().now()
         self.clear_count = 0
+        self.reroute_trigger_sensor = self._choose_trigger_sensor()
         self._publish_stop()
+        if self.active_leg_profile and self.active_leg_profile.get('remove_after_detect'):
+            self._schedule_obstacle_removal(
+                self.active_leg_profile['name'],
+                self.active_leg_profile['remove_after_detect'],
+            )
         self.get_logger().warn('Obstacle ahead — entering halt state')
 
     def _enter_reroute(self):
         self.state = State.OBSTACLE_REROUTE
         self.reroute_step = 1
-        self.reroute_direction = self._choose_reroute_direction()
+        self.reroute_plan_optimized = False
         self.reroute_start_x = self.center_x
         self.reroute_start_y = self.center_y
         self.reroute_start_progress = self._path_progress(self.center_x, self.center_y)
-        self.reroute_rejoin_min_progress = (
-            self.reroute_start_progress
-            + self.reroute_advance_distance
-            + self.reroute_rejoin_extra_distance
-        )
         self.reroute_side_clear_count = 0
         self.reroute_entry_time = self.get_clock().now()
 
-        lateral_offset = self.reroute_direction * self.reroute_lateral_distance
-        x1, y1 = self._point_on_path(self.reroute_start_progress, lateral_offset)
-        x2, y2 = self._point_on_path(
-            self.reroute_start_progress + self.reroute_advance_distance,
-            lateral_offset,
+        trigger_sensor = self.reroute_trigger_sensor or self._choose_trigger_sensor() or 'front'
+        if trigger_sensor in ('front_left', 'left'):
+            obstacle_side = 'left'
+        elif trigger_sensor in ('front_right', 'right'):
+            obstacle_side = 'right'
+        else:
+            left_min = min(self.ir['front_left'], self.ir['left'])
+            right_min = min(self.ir['front_right'], self.ir['right'])
+            obstacle_side = 'left' if right_min >= left_min else 'right'
+
+        if obstacle_side == 'left':
+            self.reroute_direction = -1.0
+            side_extent = self.left_extent
+        else:
+            self.reroute_direction = 1.0
+            side_extent = self.right_extent
+
+        self.reroute_obstacle_side = obstacle_side
+        self.reroute_target_offset = self.reroute_direction * (
+            side_extent + self.obstacle_half_size + self.obstacle_safety_margin
         )
-        x3, y3 = self._point_on_path(
-            self.reroute_start_progress + self.reroute_advance_distance + self.reroute_return_lookahead,
-            0.0,
+        self.reroute_required_pass_distance = (
+            self.robot_length + (2.0 * self.obstacle_half_size) + self.obstacle_safety_margin
         )
-        self.reroute_waypoints = [(x1, y1), (x2, y2), (x3, y3)]
+        self.reroute_rejoin_min_progress = self.reroute_start_progress + self.reroute_required_pass_distance
+        self._update_reroute_debug_points()
         self._reset_obstacle_counters()
+        if self.active_leg_profile and self.active_leg_profile.get('remove_after_reroute'):
+            self._schedule_obstacle_removal(
+                self.active_leg_profile['name'],
+                self.active_leg_profile['remove_after_reroute'],
+            )
         self.get_logger().warn(
-            'Obstacle remained blocked — rerouting to the %s' %
+            'Obstacle remained blocked — shifting %s with shell clearance' %
             ('left' if self.reroute_direction > 0.0 else 'right')
         )
+
+    def _optimize_reroute_plan_from_current_pose(self, reason):
+        self.reroute_rejoin_min_progress = self._path_progress(self.center_x, self.center_y)
+        self.reroute_step = 3
+        self.reroute_plan_optimized = True
+        self._update_reroute_debug_points()
+        self.get_logger().info(reason)
+
+    def _update_reroute_debug_points(self):
+        current_progress = self._path_progress(self.center_x, self.center_y)
+        shift_progress = max(current_progress, self.reroute_start_progress)
+        pass_progress = max(shift_progress, self.reroute_start_progress + self.reroute_required_pass_distance)
+        settle_progress = pass_progress + self.reroute_return_lookahead
+        x1, y1 = self._point_on_path(shift_progress, self.reroute_target_offset)
+        x2, y2 = self._point_on_path(pass_progress, self.reroute_target_offset)
+        x3, y3 = self._point_on_path(settle_progress, 0.0)
+        self.reroute_waypoints = [(x1, y1), (x2, y2), (x3, y3)]
 
     def _reroute_timed_out(self):
         if self.reroute_entry_time is None:
@@ -883,67 +1374,94 @@ class MissionController(Node):
             self.get_logger().error('Reroute timed out — stopping mission for safety')
             return
 
-        signed_lateral_distance = self._point_to_line_distance(self.center_x, self.center_y)
-        lateral_distance = self.reroute_direction * signed_lateral_distance
+        tx, ty, _, _ = self.waypoints[self.current_wp_idx]
+        dx = tx - self.center_x
+        dy = ty - self.center_y
         current_progress = self._path_progress(self.center_x, self.center_y)
-        target_lateral_offset = self.reroute_direction * self.reroute_lateral_distance
-        tangent, lateral = self._path_unit_vectors()
+        tangent_world_x, tangent_world_y = self._path_unit_vectors()[0]
+        tangent_body_x, tangent_body_y = self._world_to_body_vector(tangent_world_x, tangent_world_y)
 
-        if self.reroute_step == 1:
-            if lateral_distance >= self.reroute_lateral_distance - self.reroute_return_tolerance:
-                self.reroute_step = 2
-                return
-            lateral_error = target_lateral_offset - signed_lateral_distance
-            lateral_speed = max(-self.reroute_strafe_speed, min(self.reroute_strafe_speed, 1.5 * lateral_error))
-            self._drive_world_vector(
-                lateral[0] * lateral_speed,
-                lateral[1] * lateral_speed,
-                self.resume_heading_target,
-                apply_speed_zone=False,
+        desired_body_x, desired_body_y = self._world_to_body_vector(dx, dy)
+        desired_norm = math.hypot(desired_body_x, desired_body_y)
+        if desired_norm > 1e-6:
+            desired_body_x /= desired_norm
+            desired_body_y /= desired_norm
+        else:
+            desired_body_x = tangent_body_x
+            desired_body_y = tangent_body_y
+
+        repulse_body_x, repulse_body_y, active_sensors, primary_sensor = self._sensor_repulsion_body_vector()
+        line_error = self._point_to_line_distance(self.center_x, self.center_y)
+        line_recovery_y = max(-self.reroute_strafe_speed, min(self.reroute_strafe_speed, -2.1 * line_error))
+
+        if active_sensors:
+            focus_sensor = self.reroute_trigger_sensor if self.reroute_trigger_sensor in active_sensors else primary_sensor
+            escape_body_x, escape_body_y = self._focused_escape_body_vector(focus_sensor)
+            threshold = self._sensor_clearance_threshold(focus_sensor)
+            sensor_range = self.ir[focus_sensor]
+            urgency = max(0.0, min(1.0, (threshold - sensor_range) / max(threshold, 1e-6)))
+            command_body_x = (1.0 + urgency) * escape_body_x + 0.8 * repulse_body_x + 0.2 * tangent_body_x
+            command_body_y = (1.0 + urgency) * escape_body_y + 0.8 * repulse_body_y + 0.2 * line_recovery_y
+        else:
+            rejoin_progress = max(
+                current_progress + self.reroute_return_lookahead,
+                self.reroute_start_progress + self.reroute_return_lookahead,
             )
+            rejoin_x, rejoin_y = self._point_on_path(rejoin_progress, 0.0)
+            rejoin_body_x, rejoin_body_y = self._world_to_body_vector(
+                rejoin_x - self.center_x,
+                rejoin_y - self.center_y,
+            )
+            rejoin_norm = math.hypot(rejoin_body_x, rejoin_body_y)
+            if rejoin_norm > 1e-6:
+                rejoin_body_x /= rejoin_norm
+                rejoin_body_y /= rejoin_norm
+            else:
+                rejoin_body_x = tangent_body_x
+                rejoin_body_y = 0.0
+
+            command_body_x = 0.25 * desired_body_x + 0.95 * rejoin_body_x + 0.30 * tangent_body_x
+            command_body_y = 1.35 * rejoin_body_y + 1.85 * line_recovery_y
+
+        command_norm = math.hypot(command_body_x, command_body_y)
+        if command_norm < 1e-6:
+            self._publish_stop()
             return
 
-        if self.reroute_step == 2:
-            lateral_error = target_lateral_offset - signed_lateral_distance
-            lateral_correction = max(-0.06, min(0.06, 1.2 * lateral_error))
-            if (
-                self._front_arc_clear()
-                and self._reroute_ready_to_rejoin(current_progress)
-            ):
-                self.reroute_step = 3
-                return
-            self._drive_world_vector(
-                tangent[0] * self.reroute_creep_speed + lateral[0] * lateral_correction,
-                tangent[1] * self.reroute_creep_speed + lateral[1] * lateral_correction,
-                self.resume_heading_target,
-                apply_speed_zone=False,
-            )
-            return
+        speed = self.reroute_creep_speed if active_sensors else min(self.obstacle_speed_full, self.max_lin)
+        if not active_sensors and abs(line_error) > self.obstacle_return_tolerance:
+            speed = max(speed, min(self.max_lin, self.obstacle_speed_full * 0.9))
+        body_vx = speed * command_body_x / command_norm
+        body_vy = speed * command_body_y / command_norm
+        self._update_reactive_reroute_preview(body_vx, body_vy)
+        self._publish_motion(
+            vx=body_vx,
+            vy=body_vy,
+            wz=self.ang_kp * self._normalize(self.resume_heading_target - self.yaw) * 0.2,
+            apply_speed_zone=False,
+        )
 
-        if self.reroute_step == 3:
-            if abs(signed_lateral_distance) <= self.reroute_return_tolerance and self._front_arc_clear():
-                self.reroute_step = 4
-                return
-            if not self._front_arc_clear() or not self._reroute_ready_to_rejoin(current_progress):
-                self.reroute_step = 2
-                return
-            lateral_correction = max(-self.reroute_strafe_speed, min(self.reroute_strafe_speed, -1.5 * signed_lateral_distance))
-            self._drive_world_vector(
-                tangent[0] * max(self.reroute_creep_speed, 0.12) + lateral[0] * lateral_correction,
-                tangent[1] * max(self.reroute_creep_speed, 0.12) + lateral[1] * lateral_correction,
-                self.resume_heading_target,
-                apply_speed_zone=False,
-            )
-            return
+        if (
+            self._all_sensors_clear_for_motion()
+            and abs(line_error) <= max(self.obstacle_return_tolerance, self.reroute_return_tolerance)
+            and current_progress >= self.reroute_rejoin_min_progress
+        ):
+            self.clear_count += 1
+        else:
+            self.clear_count = 0
 
-        self._reset_reroute_state()
-        self.state = self.pre_obstacle_state or State.MOVE_FORWARD
-        self.get_logger().info('Reroute complete — resuming waypoint tracking')
+        if self.clear_count >= self.clear_threshold:
+            self._reset_reroute_state()
+            self.state = self.pre_obstacle_state or State.MOVE_FORWARD
+            self.get_logger().info('Reroute complete — resuming waypoint tracking')
 
     # ================================================================
     # Main control loop
     # ================================================================
     def _control_loop(self):
+        self._service_pending_obstacle_removals()
+        self._maybe_spawn_active_leg_obstacle()
+
         # Emergency stop check
         if not self.enabled and self.state != State.IDLE:
             self._publish_stop()
@@ -981,7 +1499,8 @@ class MissionController(Node):
         dy = ty - self.center_y
         dist = math.sqrt(dx**2 + dy**2)
         angle_to_target = math.atan2(dy, dx)
-        angle_error = self._normalize(angle_to_target - self.yaw)
+        rotate_target = self.resume_heading_target if self.use_resume_heading_for_target_rotate else angle_to_target
+        angle_error = self._normalize(rotate_target - self.yaw)
         scan_yaw_error = self._normalize(self.scan_heading_target - self.yaw)
         resume_yaw_error = self._normalize(self.resume_heading_target - self.yaw)
 
@@ -1024,6 +1543,7 @@ class MissionController(Node):
             if abs(angle_error) > self.ang_tol:
                 self._publish_motion(wz=self._rotation_command(angle_error))
             else:
+                self.use_resume_heading_for_target_rotate = False
                 self.state = State.MOVE_FORWARD
                 self.path_line_start = (self.center_x, self.center_y)
                 self.path_line_end = (tx, ty)
@@ -1036,19 +1556,44 @@ class MissionController(Node):
         if self.state == State.MOVE_FORWARD:
             if dist > self.pos_tol:
                 # Holonomic tracking: move toward waypoint in robot frame.
+                if self.current_wp_idx >= 3:
+                    self.resume_heading_target = self._return_leg_heading_target(tx, ty)
                 cos_y = math.cos(self.yaw)
                 sin_y = math.sin(self.yaw)
                 body_x = dx * cos_y + dy * sin_y
                 body_y = -dx * sin_y + dy * cos_y
                 norm = math.hypot(body_x, body_y)
                 speed = min(self.lin_kp * dist, self.max_lin)
+                hold_heading_error = self._normalize(self.resume_heading_target - self.yaw)
                 if norm > 1e-6:
-                    vx = speed * body_x / norm
-                    vy = speed * body_y / norm
+                    if self.current_wp_idx >= 3:
+                        if abs(hold_heading_error) > self.scan_ang_tol:
+                            self._publish_motion(
+                                wz=self._rotation_command(
+                                    hold_heading_error,
+                                    speed_scale=self.scan_rotation_kp_scale,
+                                    min_speed=self.scan_rotation_min_speed,
+                                    max_speed=self.scan_rotation_max_speed,
+                                )
+                            )
+                            return
+                        if abs(body_y) > self.pos_tol:
+                            self.resume_heading_target = self._return_leg_heading_target(tx, ty)
+                            self.use_resume_heading_for_target_rotate = True
+                            self.state = State.ROTATE_TO_TARGET
+                            self._publish_stop()
+                            self.get_logger().info(
+                                'Return leg drifted off the waypoint line — rotating back onto the path'
+                            )
+                            return
+                        vx = speed * body_x / norm
+                        vy = 0.0
+                    else:
+                        vx = speed * body_x / norm
+                        vy = speed * body_y / norm
                 else:
                     vx = 0.0
                     vy = 0.0
-                hold_heading_error = self._normalize(self.resume_heading_target - self.yaw)
                 self._publish_motion(
                     vx=vx,
                     vy=vy,
@@ -1057,27 +1602,25 @@ class MissionController(Node):
             else:
                 if not self.enable_stop_scan:
                     self._publish_stop()
-                    self.current_wp_idx += 1
-                    if self.current_wp_idx < len(self.waypoints):
-                        self.path_line_start = (self.center_x, self.center_y)
-                        self.path_line_end = self.waypoints[self.current_wp_idx][:2]
-                        self.state = State.MOVE_FORWARD
-                    else:
-                        self.state = State.COMPLETE
-                        self.get_logger().info('Straight-line run complete')
+                    self._advance_from_waypoint()
                     return
-                if self.current_wp_idx not in self.scan_waypoint_indices:
+                if not self._scan_enabled_for_waypoint(self.current_wp_idx):
                     self._publish_stop()
-                    self.current_wp_idx += 1
-                    if self.current_wp_idx < len(self.waypoints):
-                        self.path_line_start = (self.center_x, self.center_y)
-                        self.path_line_end = self.waypoints[self.current_wp_idx][:2]
-                        self.state = State.MOVE_FORWARD
+                    park_heading = self._parking_heading_for_waypoint(self.current_wp_idx)
+                    if park_heading is not None:
+                        self.resume_heading_target = park_heading
+                        self.parking_mode = True
+                        self.state = State.ROTATE_BACK_TO_PATH
+                        self.get_logger().info('At return waypoint — rotating into original parking pose')
                     else:
-                        self.state = State.COMPLETE
-                        self.get_logger().info('Skid sequence complete')
+                        self._advance_from_waypoint()
                     return
-                self.resume_heading_target = self._compute_resume_heading(tx, ty)
+                self.active_scan_direction = self._scan_direction_for_waypoint(self.current_wp_idx)
+                self.active_scan_dwell = self._scan_dwell_for_waypoint(self.current_wp_idx)
+                if self.straight_line_only and self.current_wp_idx < 3:
+                    self.resume_heading_target = self.mission_start_yaw
+                else:
+                    self.resume_heading_target = self._compute_resume_heading(tx, ty)
                 self.scan_heading_target = self._normalize(
                     self.resume_heading_target +
                     self._scan_direction_sign() * self.scan_turn_rad
@@ -1099,8 +1642,9 @@ class MissionController(Node):
                 )
             else:
                 self._publish_stop()
-                if self.scan_use_lift and tlift > 0.0:
-                    self.target_lift_pos = self._height_to_slider(tlift)
+                desired_lift = self._lift_target_for_waypoint(self.current_wp_idx)
+                if self.scan_use_lift and desired_lift > 0.0:
+                    self._begin_lift_motion(desired_lift)
                     self.state = State.LIFTING_UP
                     self.get_logger().info(
                         f'Waypoint {self.current_wp_idx} reached — rotating done, lifting with slider={self.target_lift_pos:.2f}'
@@ -1114,12 +1658,7 @@ class MissionController(Node):
         # ---- LIFTING_UP ----
         if self.state == State.LIFTING_UP:
             self._publish_stop()
-            self._publish_lift(self.target_lift_pos)
-            if self.scan_start_time is None:
-                self.scan_start_time = self.get_clock().now()
-            elapsed = (self.get_clock().now() - self.scan_start_time).nanoseconds / 1e9
-            if elapsed > self.lift_motion_time:
-                self.scan_start_time = None
+            if self._step_lift_motion():
                 self.state = State.SCANNING
                 self.get_logger().info('Lift at height — scanning shelf')
             return
@@ -1130,42 +1669,34 @@ class MissionController(Node):
             if self.scan_start_time is None:
                 self.scan_start_time = self.get_clock().now()
             elapsed = (self.get_clock().now() - self.scan_start_time).nanoseconds / 1e9
-            if elapsed >= self.lift_dwell:
+            if elapsed >= self.active_scan_dwell:
                 self.scan_start_time = None
-                self.state = State.ROTATE_BACK_TO_PATH
                 if self.scan_use_lift and self.target_lift_pos > 0.0:
-                    self.get_logger().info('Scan complete — rotating back to path heading with lift raised')
+                    self.post_lift_state = State.ROTATE_BACK_TO_PATH
+                    self.state = State.LIFTING_DOWN
+                    self.get_logger().info('Scan complete — lowering lift before rotating back to path heading')
                 else:
+                    self.state = State.ROTATE_BACK_TO_PATH
                     self.get_logger().info('Scan complete — rotating back to path heading')
             return
 
         # ---- LIFTING_DOWN ----
         if self.state == State.LIFTING_DOWN:
             self._publish_stop()
-            self._publish_lift(0.0)  # fully retracted
-            if self.scan_start_time is None:
-                self.scan_start_time = self.get_clock().now()
-            elapsed = (self.get_clock().now() - self.scan_start_time).nanoseconds / 1e9
-            if elapsed > self.lift_motion_time:
-                self.scan_start_time = None
+            if self.lift_motion_start_time is None and self.target_lift_pos != 0.0:
+                self._begin_lift_motion(0.0)
+            if self._step_lift_motion():
                 self.target_lift_pos = 0.0
-                self.current_wp_idx += 1
-                if self.current_wp_idx < len(self.waypoints):
-                    self.path_line_start = (self.center_x, self.center_y)
-                    self.path_line_end = self.waypoints[self.current_wp_idx][:2]
-                    self.state = State.MOVE_FORWARD
-                    self.get_logger().info(
-                        f'Lift retracted — moving to waypoint {self.current_wp_idx}'
-                    )
+                if self.post_lift_state is not None:
+                    self.state = self.post_lift_state
+                    self.post_lift_state = None
+                    self.get_logger().info('Lift lowered — rotating back to travel heading')
                 else:
-                    self.state = State.COMPLETE
-                    self.get_logger().info('ALL WAYPOINTS COMPLETE!')
+                    self._advance_from_waypoint()
             return
 
         # ---- ROTATE_BACK_TO_PATH ----
         if self.state == State.ROTATE_BACK_TO_PATH:
-            if self.scan_use_lift and self.target_lift_pos > 0.0:
-                self._publish_lift(self.target_lift_pos)
             if abs(resume_yaw_error) > self.scan_ang_tol:
                 self._publish_motion(
                     wz=self._rotation_command(
@@ -1177,22 +1708,17 @@ class MissionController(Node):
                 )
             else:
                 self._publish_stop()
+                if self.parking_mode:
+                    self.parking_mode = False
+                    self.state = State.COMPLETE
+                    self.get_logger().info('Returned to start and parked in original pose')
+                    return
                 if self.scan_use_lift and self.target_lift_pos > 0.0:
                     self.scan_start_time = None
                     self.state = State.LIFTING_DOWN
                     self.get_logger().info('Resumed heading — lowering lift')
                 else:
-                    self.current_wp_idx += 1
-                    if self.current_wp_idx < len(self.waypoints):
-                        self.path_line_start = (self.center_x, self.center_y)
-                        self.path_line_end = self.waypoints[self.current_wp_idx][:2]
-                        self.state = State.MOVE_FORWARD
-                        self.get_logger().info(
-                            f'Resumed heading — moving to waypoint {self.current_wp_idx}'
-                        )
-                    else:
-                        self.state = State.COMPLETE
-                        self.get_logger().info('ALL WAYPOINTS COMPLETE!')
+                    self._advance_from_waypoint()
             return
 
         # ---- COMPLETE ----

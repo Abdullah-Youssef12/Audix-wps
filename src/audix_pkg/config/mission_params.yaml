@@ -22,6 +22,7 @@ mission_controller:
     reroute_side_clearance: 0.20     # m required obstacle-side IR clearance before rejoin
     reroute_side_clear_hysteresis: 0.03  # m extra margin before a side is considered safely clear again
     reroute_side_clear_cycles: 6     # consecutive control cycles with side clearance before rejoin
+    obstacle_memory_clear_cycles: 6  # consecutive clear cycles before a blocked-side choice can be forgotten
     obstacle_halt_timeout: 3.0       # s to wait after detection before deciding to reroute
     obstacle_safety_margin: 0.06     # m footprint inflation around sensed obstacle envelope
     obstacle_path_corridor_margin: 0.03  # m extra swept-path corridor width for IR path blocking

@@ -1,10 +1,10 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
@@ -38,7 +38,7 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'use_rviz': 'false',
-            'use_gazebo_gui': use_gazebo_gui,
+                'use_gazebo_gui': 'true',
             'use_slider_gui': 'false',
             'world_file': world_path,
             'world_name': world_name,
@@ -54,6 +54,7 @@ def generate_launch_description():
         executable='parameter_bridge',
         output='screen',
         arguments=[
+            '/cmd_vel@geometry_msgs/msg/Twist[gz.msgs.Twist',
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
             '/ir_front/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/ir_front_left/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
@@ -62,6 +63,14 @@ def generate_launch_description():
             '/ir_right/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/ir_back/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
         ],
+    )
+
+    mecanum_kinematics = Node(
+        package='audix',
+        executable='mecanum_kinematics.py',
+        name='mecanum_kinematics',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
     )
 
     ekf = Node(
@@ -101,7 +110,6 @@ def generate_launch_description():
         cmd=['rviz2', '-d', rviz_config],
         output='screen',
         additional_env={'LIBGL_ALWAYS_SOFTWARE': '1'},
-        condition=IfCondition(use_rviz),
     )
 
     arena_alias_tf = Node(
@@ -111,6 +119,8 @@ def generate_launch_description():
         arguments=['0', '0', '0', '0', '0', '0', 'arena', 'arena10'],
         parameters=[{'use_sim_time': True}],
     )
+
+    both_guis = PythonExpression(["'", use_rviz, "' == 'true' and '", use_gazebo_gui, "' == 'true'"])
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2 with click-to-spawn tooling'),
@@ -126,5 +136,7 @@ def generate_launch_description():
         roamer,
         obstacle_manager,
         TimerAction(period=2.0, actions=[spawn_panel]),
-        TimerAction(period=4.0, actions=[rviz]),
+        # Delay RViz start to allow Gazebo to publish /clock and sensors
+        TimerAction(period=8.0, actions=[rviz]),
+        LogInfo(msg='[arena_experiment.launch.py] ERROR: Both Gazebo GUI and RViz must be enabled for simulation to start.', condition=IfCondition(PythonExpression(["not ('", use_rviz, "' == 'true') or not ('", use_gazebo_gui, "' == 'true')"])))
     ])

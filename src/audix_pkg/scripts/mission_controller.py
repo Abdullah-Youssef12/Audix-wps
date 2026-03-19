@@ -84,6 +84,7 @@ class MissionController(Node):
         self.declare_parameter('reroute_side_clearance', 0.20)
         self.declare_parameter('reroute_side_clear_hysteresis', 0.03)
         self.declare_parameter('reroute_side_clear_cycles', 6)
+        self.declare_parameter('obstacle_memory_clear_cycles', 6)
         self.declare_parameter('obstacle_halt_timeout', 2.5)
         self.declare_parameter('reroute_timeout', 12.0)
         self.declare_parameter('reroute_wall_follow_distance', 0.70)
@@ -158,6 +159,7 @@ class MissionController(Node):
         self.reroute_side_clearance = float(self.get_parameter('reroute_side_clearance').value)
         self.reroute_side_clear_hysteresis = float(self.get_parameter('reroute_side_clear_hysteresis').value)
         self.reroute_side_clear_cycles = int(self.get_parameter('reroute_side_clear_cycles').value)
+        self.obstacle_memory_clear_cycles = int(self.get_parameter('obstacle_memory_clear_cycles').value)
         self.obstacle_halt_timeout = float(self.get_parameter('obstacle_halt_timeout').value)
         self.reroute_timeout = float(self.get_parameter('reroute_timeout').value)
         self.reroute_wall_follow_distance = float(self.get_parameter('reroute_wall_follow_distance').value)
@@ -290,6 +292,10 @@ class MissionController(Node):
         self.reroute_required_pass_distance = 0.0
         self.reroute_obstacle_side = None
         self.reroute_trigger_sensor = None
+        self.obstacle_memory_trigger_sensor = None
+        self.obstacle_memory_blocked_side = None
+        self.obstacle_memory_bypass_side = None
+        self.obstacle_memory_clear_count = 0
         self.reroute_rotation_target_yaw = 0.0
         self.reroute_rotation_direction = 0.0
         self.reroute_rotation_attempts = 0
@@ -781,6 +787,59 @@ class MissionController(Node):
         if side == 'left':
             return ['front_left', 'left']
         return ['front_right', 'right']
+
+    def _blocked_side_from_sensor(self, sensor_name):
+        if sensor_name in ('front_left', 'left'):
+            return 'left'
+        if sensor_name in ('front_right', 'right'):
+            return 'right'
+        return None
+
+    def _latch_obstacle_memory(self, trigger_sensor=None, bypass_side=None):
+        if trigger_sensor is not None:
+            self.obstacle_memory_trigger_sensor = trigger_sensor
+
+        blocked_side = self._blocked_side_from_sensor(
+            trigger_sensor if trigger_sensor is not None else self.obstacle_memory_trigger_sensor
+        )
+        if blocked_side is not None:
+            self.obstacle_memory_blocked_side = blocked_side
+
+        if bypass_side is not None:
+            self.obstacle_memory_bypass_side = bypass_side
+        elif self.obstacle_memory_blocked_side == 'left':
+            self.obstacle_memory_bypass_side = 'right'
+        elif self.obstacle_memory_blocked_side == 'right':
+            self.obstacle_memory_bypass_side = 'left'
+
+        self.obstacle_memory_clear_count = 0
+
+    def _obstacle_memory_blocked_side_clear(self):
+        if self.obstacle_memory_blocked_side is None:
+            return True
+        clear_threshold = self.reroute_side_clearance + self.reroute_side_clear_hysteresis
+        return all(
+            self.ir[name] >= clear_threshold
+            for name in self._side_sensor_names(self.obstacle_memory_blocked_side)
+        )
+
+    def _update_obstacle_memory(self):
+        if self.obstacle_memory_blocked_side is None and self.obstacle_memory_bypass_side is None:
+            return
+
+        if self._obstacle_memory_blocked_side_clear() and self._front_path_clear():
+            self.obstacle_memory_clear_count += 1
+        else:
+            self.obstacle_memory_clear_count = 0
+
+        if self.obstacle_memory_clear_count >= self.obstacle_memory_clear_cycles:
+            self._clear_obstacle_memory()
+
+    def _clear_obstacle_memory(self):
+        self.obstacle_memory_trigger_sensor = None
+        self.obstacle_memory_blocked_side = None
+        self.obstacle_memory_bypass_side = None
+        self.obstacle_memory_clear_count = 0
 
     def _choose_trigger_sensor(self, threshold=None):
         if not self._obstacle_detection_active():
@@ -1428,6 +1487,7 @@ class MissionController(Node):
         self.reroute_rotation_target_yaw = self.yaw
         self.reroute_rotation_direction = 0.0
         self.reroute_rotation_attempts = 0
+        self._clear_obstacle_memory()
 
     def _point_to_line_distance(self, px, py):
         if self.path_line_start is None or self.path_line_end is None:
@@ -1891,6 +1951,7 @@ class MissionController(Node):
         self.clear_count = 0
         self.raw_clear_count = 0
         self.reroute_trigger_sensor = self._choose_trigger_sensor()
+        self._latch_obstacle_memory(self.reroute_trigger_sensor)
         self._publish_stop()
         if self.active_leg_profile and self.active_leg_profile.get('remove_after_detect'):
             self._schedule_obstacle_removal(
@@ -1913,11 +1974,24 @@ class MissionController(Node):
         self.reroute_entry_time = self.get_clock().now()
         envelope = self._estimate_obstacle_envelope_path_frame()
 
-        trigger_sensor = self.reroute_trigger_sensor or self._choose_trigger_sensor() or 'front'
-        _, obstacle_side, self.reroute_direction, self.reroute_target_offset = self._select_reroute_plan(
-            envelope,
-            trigger_sensor,
+        trigger_sensor = (
+            self.obstacle_memory_trigger_sensor
+            or self.reroute_trigger_sensor
+            or self._choose_trigger_sensor()
+            or 'front'
         )
+        if self.obstacle_memory_bypass_side in ('left', 'right'):
+            offsets = self._candidate_bypass_offsets(envelope)
+            bypass_side = self.obstacle_memory_bypass_side
+            obstacle_side = 'right' if bypass_side == 'left' else 'left'
+            self.reroute_direction = 1.0 if bypass_side == 'left' else -1.0
+            self.reroute_target_offset = offsets[bypass_side]
+        else:
+            bypass_side, obstacle_side, self.reroute_direction, self.reroute_target_offset = self._select_reroute_plan(
+                envelope,
+                trigger_sensor,
+            )
+        self._latch_obstacle_memory(trigger_sensor, bypass_side)
         self.reroute_obstacle_side = obstacle_side
         self.reroute_rejoin_min_progress = self._geometry_based_rejoin_progress(envelope)
 
@@ -2210,6 +2284,7 @@ class MissionController(Node):
             State.ROTATE_TO_SCAN,
             State.ROTATE_BACK_TO_PATH,
         )
+        self._update_obstacle_memory()
         if self.enable_obstacle_avoidance and self.state in obstacle_sensitive_states:
             self._update_obstacle_counters()
             if self.front_blocked_count >= self.front_blocked_threshold:
@@ -2222,6 +2297,7 @@ class MissionController(Node):
         if self.state == State.OBSTACLE_HALT:
             self._publish_stop()
             self._update_obstacle_counters()
+            self._update_obstacle_memory()
             if self._all_sensors_raw_clear_for_motion():
                 self.raw_clear_count += 1
             else:

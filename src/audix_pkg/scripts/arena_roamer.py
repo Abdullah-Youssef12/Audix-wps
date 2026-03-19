@@ -93,6 +93,18 @@ class ArenaRoamer(Node):
         self.declare_parameter('route_waypoint_tolerance', 0.24)
         self.declare_parameter('route_waypoint_dwell_sec', 0.35)
         self.declare_parameter('route_fail_on_timeout', True)
+        self.declare_parameter('motion_hold_sec', 0.30)
+        self.declare_parameter('motion_switch_score_margin', 0.22)
+        self.declare_parameter('motion_clearance_hysteresis', 0.03)
+        self.declare_parameter('ir_emergency_raw_ratio', 0.82)
+        self.declare_parameter('blocked_side_release_cycles', 6)
+        self.declare_parameter('blocked_side_release_clearance', 0.24)
+        self.declare_parameter('blocked_side_forward_bias', 0.35)
+        self.declare_parameter('blocked_clearance_margin', 0.10)
+        self.declare_parameter('blocked_goal_lateral_min', 0.18)
+        self.declare_parameter('blocked_goal_forward_bonus', 1.20)
+        self.declare_parameter('avoid_commit_cycles', 5)
+        self.declare_parameter('avoid_forward_cycles', 8)
 
         self.arena_min_x = float(self.get_parameter('arena_min_x').value)
         self.arena_max_x = float(self.get_parameter('arena_max_x').value)
@@ -163,6 +175,18 @@ class ArenaRoamer(Node):
         self.route_waypoint_tolerance = float(self.get_parameter('route_waypoint_tolerance').value)
         self.route_waypoint_dwell_sec = float(self.get_parameter('route_waypoint_dwell_sec').value)
         self.route_fail_on_timeout = bool(self.get_parameter('route_fail_on_timeout').value)
+        self.motion_hold_sec = float(self.get_parameter('motion_hold_sec').value)
+        self.motion_switch_score_margin = float(self.get_parameter('motion_switch_score_margin').value)
+        self.motion_clearance_hysteresis = float(self.get_parameter('motion_clearance_hysteresis').value)
+        self.ir_emergency_raw_ratio = float(self.get_parameter('ir_emergency_raw_ratio').value)
+        self.blocked_side_release_cycles = max(1, int(self.get_parameter('blocked_side_release_cycles').value))
+        self.blocked_side_release_clearance = float(self.get_parameter('blocked_side_release_clearance').value)
+        self.blocked_side_forward_bias = float(self.get_parameter('blocked_side_forward_bias').value)
+        self.blocked_goal_lateral_min = float(self.get_parameter('blocked_goal_lateral_min').value)
+        self.blocked_goal_forward_bonus = float(self.get_parameter('blocked_goal_forward_bonus').value)
+        self.avoid_commit_cycles = max(1, int(self.get_parameter('avoid_commit_cycles').value))
+        self.avoid_forward_cycles = max(1, int(self.get_parameter('avoid_forward_cycles').value))
+        self.blocked_clearance_margin = float(self.get_parameter('blocked_clearance_margin').value)
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.path_pub = self.create_publisher(Path, '/debug/planned_path', 10)
@@ -215,6 +239,7 @@ class ArenaRoamer(Node):
         self.motion_name = 'STOP'
         self.startup_clear_cycles = 0
         self.blocked_started_sec = None
+        self.startup_gate_complete = False
         self.escape_hold_until_sec = 0.0
         self.stuck_motion_name = None
         self.stuck_motion_started_sec = None
@@ -223,11 +248,21 @@ class ArenaRoamer(Node):
         self.last_cmd_vx = 0.0
         self.last_cmd_vy = 0.0
         self.last_cmd_wz = 0.0
+        self.current_planar_speed = 0.0
         self.route_waypoints = self._build_route_waypoints(self.route_name) if self.control_mode == 'acceptance_path' else []
         self.route_waypoint_index = 0
         self.route_goal_hold_until_sec = 0.0
         self.route_complete = False
         self.route_failed = False
+        self.active_motion_selection = None
+        self.active_motion_hold_until_sec = 0.0
+        self.blocked_side = None
+        self.blocked_side_clear_count = 0
+        self.avoid_memory = None
+        # Odometry-based blind-spot clearance tracking
+        self.blocked_clearance_active = False
+        self.blocked_clearance_origin = None  # (x, y, yaw)
+        self.blocked_clearance_target = 0.0
 
         self.create_timer(self.control_period, self._control_loop)
         self.create_timer(0.2, self._publish_debug)
@@ -280,11 +315,267 @@ class ArenaRoamer(Node):
     def _sensor_control_value(self, sensor_name):
         filtered_range = self.ir[sensor_name]
         raw_range = self.ir_raw[sensor_name]
+        emergency_threshold = max(0.0, self.hard_escape_distance * self.ir_emergency_raw_ratio)
+        if math.isfinite(raw_range) and raw_range <= emergency_threshold:
+            return raw_range
+        if math.isfinite(filtered_range):
+            return filtered_range
+        if math.isfinite(raw_range):
+            return raw_range
         if math.isfinite(filtered_range) and math.isfinite(raw_range):
             return min(filtered_range, raw_range)
         if math.isfinite(filtered_range):
             return filtered_range
         return raw_range
+
+    def _reset_motion_selection(self):
+        self.active_motion_selection = None
+        self.active_motion_hold_until_sec = 0.0
+
+    def _reset_blocked_side(self):
+        self.blocked_side = None
+        self.blocked_side_clear_count = 0
+        self.avoid_memory = None
+
+    def _blocked_side_from_sensor(self, sensor_name):
+        if sensor_name in ('left', 'front_left'):
+            return 'left'
+        if sensor_name in ('right', 'front_right'):
+            return 'right'
+        return None
+
+    def _blocked_side_clearance(self, side_name):
+        # For binary IR sensors, return 0.0 when either relevant sensor is blocked,
+        # otherwise +inf to indicate clear.
+        if side_name == 'left':
+            return 0.0 if self._sensors_blocked_any('left', 'front_left') else float('inf')
+        if side_name == 'right':
+            return 0.0 if self._sensors_blocked_any('right', 'front_right') else float('inf')
+        return float('inf')
+
+    def _avoidance_rejoin_allowed(self):
+        if self.blocked_side is None:
+            return True
+        if self.blocked_clearance_active:
+            return False
+        return self.blocked_side_clear_count >= self.blocked_side_release_cycles
+
+    def _start_avoidance_memory(self, blocked_side, bypass_side):
+        if blocked_side not in ('left', 'right') or bypass_side not in ('left', 'right'):
+            return
+        self.avoid_memory = {
+            'blocked_side': blocked_side,
+            'bypass_side': bypass_side,
+            'phase': 'commit_bypass',
+            'cycles_remaining': self.avoid_commit_cycles,
+        }
+
+    def _set_forward_until_clear_memory(self, blocked_side):
+        if blocked_side not in ('left', 'right'):
+            return
+
+        self.avoid_memory = {
+            'blocked_side': blocked_side,
+            'bypass_side': 'right' if blocked_side == 'left' else 'left',
+            'phase': 'forward_until_clear',
+            'cycles_remaining': self.avoid_forward_cycles,
+        }
+
+    def _goal_side_preference(self, goal_body_x, goal_body_y):
+        if goal_body_x <= 0.0:
+            return None
+        if goal_body_y >= self.blocked_goal_lateral_min:
+            return 'left'
+        if goal_body_y <= -self.blocked_goal_lateral_min:
+            return 'right'
+        return None
+
+    def _should_prefer_forward_until_clear(self, goal_body_x, goal_body_y, forward_blocked):
+        if self.blocked_side is None:
+            return False
+        if self._goal_side_preference(goal_body_x, goal_body_y) != self.blocked_side:
+            return False
+        # prefer forward-until-clear only when forward sensors are currently clear
+        if forward_blocked:
+            return False
+        return True
+
+    def _update_blocked_side(self, hottest_sensor):
+        sensed_side = self._blocked_side_from_sensor(hottest_sensor)
+
+        if self.blocked_side is None:
+            if sensed_side is not None:
+                self.blocked_side = sensed_side
+                self.blocked_side_clear_count = 0
+                # entering a blocked side — cancel any prior clearance tracking
+                self.blocked_clearance_active = False
+            return
+        # Binary sensors: count clear cycles when the blocked side's sensors are all clear
+        if self.blocked_side == 'left':
+            side_blocked = self._sensors_blocked_any('left', 'front_left')
+        elif self.blocked_side == 'right':
+            side_blocked = self._sensors_blocked_any('right', 'front_right')
+        else:
+            side_blocked = False
+
+        if not side_blocked:
+            # start counting clear cycles; when cleared, begin odometry-based clearance
+            self.blocked_side_clear_count += 1
+            if self.blocked_side_clear_count >= self.blocked_side_release_cycles and not self.blocked_clearance_active:
+                # begin clearance hold: record odom origin and required forward distance
+                left_x = self.sensor_positions.get('left', (0.0, 0.0))[0]
+                back_x = self.sensor_positions.get('back', (0.0, 0.0))[0]
+                # distance from the sensor to the rear-most chassis edge (approx)
+                back_chassis = back_x - left_x if self.blocked_side == 'left' else back_x - self.sensor_positions.get('right', (0.0, 0.0))[0]
+                # safety margin param
+                margin = self.blocked_clearance_margin
+                self.blocked_clearance_target = max(0.0, back_chassis + margin)
+                self.blocked_clearance_origin = (self.center_x, self.center_y, self.yaw)
+                self.blocked_clearance_active = True
+                self.blocked_side_clear_count = 0
+                return
+        else:
+            self.blocked_side_clear_count = 0
+
+        if sensed_side == self.blocked_side:
+            self.blocked_side_clear_count = 0
+
+        # If we are tracking odometry-based clearance, check for completion
+        if self.blocked_clearance_active and self._blocked_clearance_reached():
+            self.blocked_side = None
+            self.blocked_clearance_active = False
+            self.blocked_side_clear_count = 0
+            self.blocked_clearance_origin = None
+            self.blocked_clearance_target = 0.0
+
+    def _blocked_clearance_reached(self):
+        if not self.blocked_clearance_active or self.blocked_clearance_origin is None:
+            return False
+        ox, oy, oyaw = self.blocked_clearance_origin
+        dx = self.center_x - ox
+        dy = self.center_y - oy
+        forward = math.cos(oyaw) * dx + math.sin(oyaw) * dy
+        return forward >= self.blocked_clearance_target
+
+    def _update_avoidance_memory(self, hottest_sensor):
+        sensed_side = self._blocked_side_from_sensor(hottest_sensor)
+        self._update_blocked_side(hottest_sensor)
+
+        if self.avoid_memory is None:
+            return
+
+        blocked_side = self.avoid_memory['blocked_side']
+        if self.blocked_side not in (None, blocked_side):
+            self.avoid_memory = None
+            return
+
+        if sensed_side == blocked_side:
+            self.avoid_memory = {
+                'blocked_side': blocked_side,
+                'bypass_side': 'right' if blocked_side == 'left' else 'left',
+                'phase': 'commit_bypass',
+                'cycles_remaining': self.avoid_commit_cycles,
+            }
+            return
+
+        if not self._avoidance_rejoin_allowed():
+            if self.avoid_memory['phase'] == 'forward_until_clear':
+                self.avoid_memory['cycles_remaining'] = max(
+                    self.avoid_memory['cycles_remaining'],
+                    self.avoid_forward_cycles,
+                )
+            return
+
+        if self.avoid_memory['phase'] == 'commit_bypass':
+            self.avoid_memory['phase'] = 'forward_until_clear'
+            self.avoid_memory['cycles_remaining'] = self.avoid_forward_cycles
+            return
+
+        if self.avoid_memory['phase'] == 'forward_until_clear':
+            self.avoid_memory['cycles_remaining'] -= 1
+            if self.avoid_memory['cycles_remaining'] <= 0:
+                self.avoid_memory = None
+
+    def _motion_blocked_by_memory(self, motion_name):
+        if self.blocked_side == 'left' and motion_name in ('left', 'diag_left'):
+            return True
+        if self.blocked_side == 'right' and motion_name in ('right', 'diag_right'):
+            return True
+
+        if self.avoid_memory is None:
+            return False
+
+        blocked_side = self.avoid_memory['blocked_side']
+        bypass_side = self.avoid_memory['bypass_side']
+        phase = self.avoid_memory['phase']
+
+        if blocked_side == 'left' and motion_name in ('left', 'diag_left'):
+            return True
+        if blocked_side == 'right' and motion_name in ('right', 'diag_right'):
+            return True
+
+        if phase == 'commit_bypass':
+            allowed = {'forward', 'backward', bypass_side, 'diag_' + bypass_side}
+            return motion_name not in allowed
+
+        if phase == 'forward_until_clear':
+            allowed = {'forward', 'backward', bypass_side, 'diag_' + bypass_side}
+            return motion_name not in allowed
+
+        return False
+
+    def _candidate_is_safe(self, candidate, clearance):
+        return not math.isfinite(clearance) or clearance > candidate['threshold']
+
+    def _select_committed_motion(self, scored_candidates, danger_mode):
+        if not scored_candidates:
+            self._reset_motion_selection()
+            return None
+
+        scored_candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_motion_name, best_candidate, best_clearance = scored_candidates[0]
+        now_sec = self._now_sec()
+
+        if self.active_motion_selection is None:
+            self.active_motion_selection = best_motion_name
+            self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+            return best_score, best_motion_name, best_candidate, best_clearance
+
+        active_entry = None
+        for entry in scored_candidates:
+            if entry[1] == self.active_motion_selection:
+                active_entry = entry
+                break
+
+        if active_entry is None:
+            self.active_motion_selection = best_motion_name
+            self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+            return best_score, best_motion_name, best_candidate, best_clearance
+
+        active_score, active_motion_name, active_candidate, active_clearance = active_entry
+        if not self._candidate_is_safe(
+            active_candidate,
+            active_clearance - self.motion_clearance_hysteresis,
+        ):
+            self.active_motion_selection = best_motion_name
+            self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+            return best_score, best_motion_name, best_candidate, best_clearance
+
+        if danger_mode and active_motion_name.startswith('diag') and best_motion_name in ('left', 'right', 'backward'):
+            self.active_motion_selection = best_motion_name
+            self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+            return best_score, best_motion_name, best_candidate, best_clearance
+
+        if now_sec < self.active_motion_hold_until_sec:
+            return active_entry
+
+        if best_motion_name != active_motion_name and best_score > active_score + self.motion_switch_score_margin:
+            self.active_motion_selection = best_motion_name
+            self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+            return best_score, best_motion_name, best_candidate, best_clearance
+
+        self.active_motion_hold_until_sec = now_sec + self.motion_hold_sec
+        return active_entry
 
     def _sensor_min_control(self, *sensor_names):
         values = []
@@ -375,6 +666,7 @@ class ArenaRoamer(Node):
         self.yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
         self.center_x, self.center_y = self._center_xy(self.x, self.y, self.yaw)
         self.last_odom_sec = self._now_sec()
+        self.current_planar_speed = math.hypot(msg.twist.twist.linear.x, msg.twist.twist.linear.y)
 
         if self.last_path_point is None:
             self.last_path_point = (self.center_x, self.center_y)
@@ -386,7 +678,8 @@ class ArenaRoamer(Node):
         if math.hypot(dx, dy) >= self.path_point_spacing:
             self.last_path_point = (self.center_x, self.center_y)
             self.robot_path.append(self._make_pose(self.center_x, self.center_y, self._geometry_body_yaw()))
-            self.robot_path = self.robot_path[-3000:]
+            # Reduce trail history to avoid heavy RViz rendering while preserving visibility
+            self.robot_path = self.robot_path[-800:]
 
     def _center_xy(self, base_x, base_y, yaw):
         return (
@@ -443,6 +736,19 @@ class ArenaRoamer(Node):
         raw_range = self.ir_raw.get(sensor_name, float('inf'))
         range_max = self.ir_range_max.get(sensor_name, self.ir_default_range_max)
         return math.isfinite(raw_range) and raw_range < range_max
+
+    def _sensor_blocked(self, sensor_name):
+        # Binary interpretation of IR: blocked if sensor reports a hit
+        return self._sensor_hit_visible(sensor_name)
+
+    def _sensors_blocked_any(self, *sensor_names):
+        for n in sensor_names:
+            if self._sensor_blocked(n):
+                return True
+        return False
+
+    def _all_sensors_clear_binary(self):
+        return not any(self._sensor_blocked(n) for n in self.sensor_names)
 
     def _ir_cone_color(self, sensor_name):
         if sensor_name == 'front':
@@ -636,22 +942,17 @@ class ArenaRoamer(Node):
         }
         repulse_x = 0.0
         repulse_y = 0.0
+        # Binary IR: each blocked sensor contributes a fixed urgency.
         hottest_sensor = None
-        hottest_range = float('inf')
         for sensor_name in self.sensor_names:
-            sensor_range = self._sensor_control_value(sensor_name)
-            if not math.isfinite(sensor_range):
-                continue
-            threshold = self.obstacle_clear_distance if sensor_name == 'front' else self.obstacle_detect_distance
-            if sensor_range >= threshold:
-                continue
-            urgency = (threshold - sensor_range) / max(threshold, 1e-6)
-            dir_x, dir_y = directions[sensor_name]
-            repulse_x += dir_x * urgency
-            repulse_y += dir_y * urgency
-            if sensor_range < hottest_range:
-                hottest_range = sensor_range
-                hottest_sensor = sensor_name
+            if self._sensor_blocked(sensor_name):
+                dir_x, dir_y = directions[sensor_name]
+                repulse_x += dir_x * 1.0
+                repulse_y += dir_y * 1.0
+                if hottest_sensor is None:
+                    hottest_sensor = sensor_name
+        # hottest_range set to 0.0 when any sensor is blocked, else +inf
+        hottest_range = 0.0 if hottest_sensor is not None else float('inf')
         return repulse_x, repulse_y, hottest_sensor, hottest_range
 
     def _focused_escape_body_vector(self, sensor_name):
@@ -753,7 +1054,7 @@ class ArenaRoamer(Node):
             },
         }
 
-    def _choose_motion_command(self, desired_body_x, desired_body_y, goal_heading_error, hottest_sensor, hottest_range):
+    def _choose_motion_command(self, desired_body_x, desired_body_y, goal_body_x, goal_body_y, goal_heading_error, hottest_sensor, hottest_range):
         candidates = self._movement_candidate_map()
         danger_mode = hottest_sensor is not None and hottest_range <= self.obstacle_danger_distance
         desired_norm = math.hypot(desired_body_x, desired_body_y)
@@ -771,10 +1072,28 @@ class ArenaRoamer(Node):
             escape_x = 0.0
             escape_y = 0.0
 
+        forward_candidate = candidates['forward']
+        forward_blocked = self._sensors_blocked_any(*forward_candidate['sensors'])
+        prefer_forward_until_clear = self._should_prefer_forward_until_clear(
+            goal_body_x,
+            goal_body_y,
+            forward_blocked,
+        )
+
+        if prefer_forward_until_clear and (
+            self.avoid_memory is None or self.avoid_memory.get('phase') != 'forward_until_clear'
+        ):
+            self._set_forward_until_clear_memory(self.blocked_side)
+
         scored_candidates = []
         for motion_name, candidate in candidates.items():
-            clearance = self._sensor_min(*candidate['sensors'])
-            if math.isfinite(clearance) and clearance <= candidate['threshold']:
+            if self._motion_blocked_by_memory(motion_name):
+                continue
+
+            # Binary blocked check: if any of the candidate sensors report blocked,
+            # consider the candidate unsafe.
+            blocked = self._sensors_blocked_any(*candidate['sensors'])
+            if blocked:
                 continue
 
             if motion_name == 'forward' and abs(goal_heading_error) > self.forward_heading_allowance and desired_body_x >= 0.0:
@@ -784,13 +1103,8 @@ class ArenaRoamer(Node):
             direction_score = (
                 candidate['vx'] * desired_body_x + candidate['vy'] * desired_body_y
             ) / (cand_norm * desired_norm)
-            clearance_score = 0.0
-            if math.isfinite(clearance):
-                clearance_score = clamp(
-                    (clearance - candidate['threshold']) / max(candidate['threshold'], 1e-6),
-                    0.0,
-                    2.0,
-                )
+            # Binary clearance score: clear -> best score contribution, blocked -> excluded above
+            clearance_score = 1.0
             escape_score = 0.0
             if danger_mode:
                 escape_score = (
@@ -802,11 +1116,27 @@ class ArenaRoamer(Node):
                 score -= 0.18
             if motion_name.startswith('diag'):
                 score -= 0.04
-            scored_candidates.append((score, motion_name, candidate, clearance))
+            if self.blocked_side is not None and motion_name == 'forward':
+                score += self.blocked_side_forward_bias
+            if prefer_forward_until_clear and motion_name == 'forward':
+                score += self.blocked_goal_forward_bonus
+            if self.avoid_memory is not None:
+                if self.avoid_memory['phase'] == 'commit_bypass':
+                    if motion_name == self.avoid_memory['bypass_side']:
+                        score += 0.70
+                    elif motion_name == ('diag_' + self.avoid_memory['bypass_side']):
+                        score += 0.45
+                    elif motion_name == 'forward':
+                        score += 0.12
+                elif self.avoid_memory['phase'] == 'forward_until_clear' and motion_name == 'forward':
+                    score += 0.85
+            # motion_clearance: +inf when clear (for later scaling), 0.0 when blocked (but blocked already filtered)
+            motion_clearance = float('inf')
+            scored_candidates.append((score, motion_name, candidate, motion_clearance))
 
-        if scored_candidates:
-            scored_candidates.sort(key=lambda item: item[0], reverse=True)
-            _, motion_name, candidate, clearance = scored_candidates[0]
+        selected = self._select_committed_motion(scored_candidates, danger_mode)
+        if selected is not None:
+            _, motion_name, candidate, clearance = selected
             return motion_name, candidate, clearance, danger_mode
 
         return None, None, float('inf'), danger_mode
@@ -861,13 +1191,14 @@ class ArenaRoamer(Node):
         return self._now_sec() < self.escape_hold_until_sec
 
     def _publish_cmd(self, vx, vy, wz):
-        if vx > 0.0 and self._sensor_min_control('front', 'front_left', 'front_right') < self.obstacle_detect_distance:
+        # Binary sensor gating: stop motion along an axis if relevant sensors are blocked
+        if vx > 0.0 and self._sensors_blocked_any('front', 'front_left', 'front_right'):
             vx = 0.0
-        if vy > 0.0 and self._sensor_min_control('left', 'front_left') < self.obstacle_side_min:
+        if vy > 0.0 and self._sensors_blocked_any('left', 'front_left'):
             vy = 0.0
-        if vy < 0.0 and self._sensor_min_control('right', 'front_right') < self.obstacle_side_min:
+        if vy < 0.0 and self._sensors_blocked_any('right', 'front_right'):
             vy = 0.0
-        if vx < 0.0 and self._sensor_min_control('back') < self.obstacle_side_min:
+        if vx < 0.0 and self._sensors_blocked_any('back'):
             vx = 0.0
 
         now_sec = self._now_sec()
@@ -898,56 +1229,72 @@ class ArenaRoamer(Node):
         if self.last_path_point is None or not self._sensor_warm():
             self.state_name = 'WARMUP'
             self.motion_name = 'STOP'
+            self._reset_motion_selection()
+            self._reset_blocked_side()
             self._publish_cmd(0.0, 0.0, 0.0)
             return
 
         if not self._odom_fresh():
             self.state_name = 'STALE_ODOM'
             self.motion_name = 'STOP'
+            self._reset_motion_selection()
+            self._reset_blocked_side()
             self._publish_cmd(0.0, 0.0, 0.0)
             return
 
         if not self._sensors_fresh():
             self.state_name = 'STALE_IR'
             self.motion_name = 'STOP'
+            self._reset_motion_selection()
+            self._reset_blocked_side()
             self._publish_cmd(0.0, 0.0, 0.0)
             return
 
-        if self._all_sensors_clear(self.startup_clearance_distance):
-            self.startup_clear_cycles += 1
-            self.blocked_started_sec = None
-        else:
-            self.startup_clear_cycles = 0
-            if self.blocked_started_sec is None:
-                self.blocked_started_sec = self._now_sec()
+        if not self.startup_gate_complete:
+            if self._all_sensors_clear_binary():
+                self.startup_clear_cycles += 1
+                self.blocked_started_sec = None
+            else:
+                self.startup_clear_cycles = 0
+                if self.blocked_started_sec is None:
+                    self.blocked_started_sec = self._now_sec()
 
-        if self.startup_clear_cycles < 3:
-            if self.blocked_started_sec is not None and self._now_sec() - self.blocked_started_sec >= self.startup_escape_delay_sec:
-                _, _, hottest_sensor, _ = self._sensor_repulsion_body_vector()
-                if hottest_sensor is not None:
-                    escape_x, escape_y = self._focused_escape_body_vector(hottest_sensor)
-                    self.state_name = 'STARTUP_ESCAPE'
-                    self.motion_name = 'ESCAPE'
-                    self._publish_cmd(
-                        escape_x * self.hard_escape_speed,
-                        escape_y * self.hard_escape_speed,
-                        0.0,
-                    )
-                    return
-            self.state_name = 'WAIT_CLEAR'
-            self.motion_name = 'STOP'
-            self._publish_cmd(0.0, 0.0, 0.0)
-            return
+            if self.startup_clear_cycles >= 3:
+                self.startup_gate_complete = True
+                self.blocked_started_sec = None
+            else:
+                if self.blocked_started_sec is not None and self._now_sec() - self.blocked_started_sec >= self.startup_escape_delay_sec:
+                    _, _, hottest_sensor, _ = self._sensor_repulsion_body_vector()
+                    if hottest_sensor is not None:
+                        escape_x, escape_y = self._focused_escape_body_vector(hottest_sensor)
+                        self.state_name = 'STARTUP_ESCAPE'
+                        self.motion_name = 'ESCAPE'
+                        self._publish_cmd(
+                            escape_x * self.hard_escape_speed,
+                            escape_y * self.hard_escape_speed,
+                            0.0,
+                        )
+                        return
+                self.state_name = 'WAIT_CLEAR'
+                self.motion_name = 'STOP'
+                self._reset_motion_selection()
+                self._reset_blocked_side()
+                self._publish_cmd(0.0, 0.0, 0.0)
+                return
 
         if self.control_mode == 'acceptance_path':
             if self.route_failed:
                 self.state_name = 'ROUTE_FAILED'
                 self.motion_name = 'STOP'
+                self._reset_motion_selection()
+                self._reset_blocked_side()
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return
             if self.route_complete:
                 self.state_name = 'ROUTE_COMPLETE'
                 self.motion_name = 'STOP'
+                self._reset_motion_selection()
+                self._reset_blocked_side()
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return
 
@@ -956,6 +1303,8 @@ class ArenaRoamer(Node):
             if self.goal_x is None or self.goal_y is None:
                 self.state_name = 'NO_TARGET'
                 self.motion_name = 'STOP'
+                self._reset_motion_selection()
+                self._reset_blocked_side()
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return
 
@@ -970,12 +1319,16 @@ class ArenaRoamer(Node):
                 if self._now_sec() < self.route_goal_hold_until_sec:
                     self.state_name = 'WAYPOINT_SETTLE'
                     self.motion_name = 'STOP'
+                    self._reset_motion_selection()
+                    self._reset_blocked_side()
                     self._publish_cmd(0.0, 0.0, 0.0)
                     return
                 self._advance_route_waypoint('Waypoint reached.')
                 if self.route_complete:
                     self.state_name = 'ROUTE_COMPLETE'
                     self.motion_name = 'STOP'
+                    self._reset_motion_selection()
+                    self._reset_blocked_side()
                     self._publish_cmd(0.0, 0.0, 0.0)
                     return
             else:
@@ -989,6 +1342,8 @@ class ArenaRoamer(Node):
                 self.route_failed = True
                 self.state_name = 'WAYPOINT_TIMEOUT'
                 self.motion_name = 'STOP'
+                self._reset_motion_selection()
+                self._reset_blocked_side()
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return
             self._choose_new_goal('Goal timed out.')
@@ -1004,6 +1359,7 @@ class ArenaRoamer(Node):
         goal_heading_error = self._normalize(goal_heading - self._geometry_body_yaw())
 
         repulse_x, repulse_y, hottest_sensor, hottest_range = self._sensor_repulsion_body_vector()
+        self._update_avoidance_memory(hottest_sensor)
         wall_world_x, wall_world_y = self._wall_repulsion_world_vector()
         wall_body_x, wall_body_y = self._world_to_body_vector(wall_world_x, wall_world_y)
         desired_body_x = self.goal_gain * goal_body_x + self.wall_gain * wall_body_x - self.repulsion_gain * repulse_x
@@ -1020,6 +1376,7 @@ class ArenaRoamer(Node):
             escape_x, escape_y = self._focused_escape_body_vector(hottest_sensor)
             self.state_name = 'ESCAPE_HOLD'
             self.motion_name = 'ESCAPE'
+            self._reset_motion_selection()
             self._publish_cmd(
                 escape_x * self.hard_escape_speed,
                 escape_y * self.hard_escape_speed,
@@ -1030,18 +1387,22 @@ class ArenaRoamer(Node):
         if hottest_sensor is None and abs(goal_heading_error) >= self.reorient_heading_threshold:
             self.state_name = 'REORIENT'
             self.motion_name = 'ROTATE'
+            self._reset_motion_selection()
             self._publish_cmd(0.0, 0.0, self._rotation_command(goal_heading_error, None, None))
             return
 
         if hottest_sensor is None and abs(goal_heading_error) > self.forward_heading_allowance:
             self.state_name = 'ALIGN_FORWARD'
             self.motion_name = 'ROTATE'
+            self._reset_motion_selection()
             self._publish_cmd(0.0, 0.0, self._rotation_command(goal_heading_error, None, None))
             return
 
         motion_name, candidate, motion_clearance, danger_mode = self._choose_motion_command(
             desired_body_x,
             desired_body_y,
+            goal_body_x,
+            goal_body_y,
             goal_heading_error,
             hottest_sensor,
             hottest_range,
@@ -1053,21 +1414,39 @@ class ArenaRoamer(Node):
                 rotate_sensor = 'front'
             self.state_name = 'HOLD_ROTATE'
             self.motion_name = 'ROTATE'
+            self._reset_motion_selection()
             self._publish_cmd(0.0, 0.0, self._rotation_command(goal_heading_error, rotate_sensor, None))
             return
 
-        if motion_name == 'forward' and math.isfinite(closest_front) and closest_front <= self.forward_clearance_distance:
-            side_choice = 'left' if self._sensor_min('left', 'front_left') >= self._sensor_min('right', 'front_right') else 'right'
+        if motion_name == 'forward' and self._sensors_blocked_any('front', 'front_left', 'front_right'):
+            # Prefer a side that is clear (binary). If both clear, choose by current clearance.
+            left_blocked = self._sensors_blocked_any('left', 'front_left')
+            right_blocked = self._sensors_blocked_any('right', 'front_right')
+            if not left_blocked and right_blocked:
+                side_choice = 'left'
+            elif not right_blocked and left_blocked:
+                side_choice = 'right'
+            else:
+                side_choice = 'left' if self._sensor_min('left', 'front_left') >= self._sensor_min('right', 'front_right') else 'right'
+
             candidate = self._movement_candidate_map()[side_choice]
-            side_clearance = self._sensor_min(*candidate['sensors'])
-            if not math.isfinite(side_clearance) or side_clearance > candidate['threshold']:
+            side_clear_ok = not self._sensors_blocked_any(*candidate['sensors'])
+            if side_clear_ok:
                 motion_name = side_choice
-                motion_clearance = side_clearance
+                motion_clearance = float('inf')
+                blocked_side = 'right' if side_choice == 'left' else 'left'
+                self._start_avoidance_memory(blocked_side, side_choice)
             else:
                 self.state_name = 'FRONT_BLOCKED_ROTATE'
                 self.motion_name = 'ROTATE'
+                self._reset_motion_selection()
                 self._publish_cmd(0.0, 0.0, self._rotation_command(goal_heading_error, 'front', None))
                 return
+
+        if self.avoid_memory is None and hottest_sensor in ('front_left', 'left') and motion_name in ('right', 'diag_right'):
+            self._start_avoidance_memory('left', 'right')
+        elif self.avoid_memory is None and hottest_sensor in ('front_right', 'right') and motion_name in ('left', 'diag_left'):
+            self._start_avoidance_memory('right', 'left')
 
         speed_cap = min(self.max_linear_speed, self.max_lateral_speed) * candidate['speed_scale']
         if math.isfinite(closest_any):
@@ -1114,6 +1493,7 @@ class ArenaRoamer(Node):
             escape_x, escape_y = self._focused_escape_body_vector(hottest_sensor)
             self.state_name = 'STUCK_ESCAPE'
             self.motion_name = 'ESCAPE'
+            self._reset_motion_selection()
             self._publish_cmd(
                 escape_x * self.hard_escape_speed,
                 escape_y * self.hard_escape_speed,
@@ -1273,11 +1653,12 @@ class ArenaRoamer(Node):
                 self.route_failed,
             )
         state.data = (
-            'state=%s motion=%s goal=%s%s pos=(%.2f, %.2f) ir[f=%.2f fl=%.2f fr=%.2f l=%.2f r=%.2f b=%.2f]' % (
+            'state=%s motion=%s goal=%s%s blocked_side=%s pos=(%.2f, %.2f) ir[f=%.2f fl=%.2f fr=%.2f l=%.2f r=%.2f b=%.2f]' % (
                 self.state_name,
                 self.motion_name,
                 goal_text,
                 route_text,
+                self.blocked_side,
                 self.center_x,
                 self.center_y,
                 self.ir_raw['front'],

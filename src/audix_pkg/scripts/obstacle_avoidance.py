@@ -2,7 +2,7 @@
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 
@@ -11,44 +11,57 @@ class ObstacleAvoidance(Node):
     def __init__(self):
         super().__init__('obstacle_avoidance')
 
-        self.subscription = self.create_subscription(
-            LaserScan,
-            '/scan',
-            self.scan_callback,
-            10,
-        )
+        # Map six IR topics (as published by the robot URDF) to sensor names
+        self.sensor_topics = {
+            'front': '/ir_front/scan',
+            'front_left': '/ir_front_left/scan',
+            'front_right': '/ir_front_right/scan',
+            'left': '/ir_left/scan',
+            'right': '/ir_right/scan',
+            'back': '/ir_back/scan',
+        }
 
-        self.publisher = self.create_publisher(
-            TwistStamped,
-            '/diff_drive_controller/cmd_vel',
-            10,
-        )
+        # Boolean blocked state per sensor (True == blocked)
+        self.ir_blocked = {name: False for name in self.sensor_topics}
 
-        self.safe_distance = 0.5
-        self.get_logger().info('Obstacle Avoidance Node Started')
+        # Physical sensor bounds (FC-51 in URDF)
+        self.ir_min = 0.05
+        self.ir_max = 0.30
 
-    def scan_callback(self, msg: LaserScan):
+        # Subscribe to each sensor topic and bind the sensor name
+        for name, topic in self.sensor_topics.items():
+            self.create_subscription(LaserScan, topic, lambda msg, n=name: self.scan_callback(n, msg), 10)
+
+        # Publish Twist on /cmd_vel to match this repo's controller expectations
+        self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
+
+        self.get_logger().info('Obstacle Avoidance Node Started (binary IR mode)')
+
+    def scan_callback(self, sensor_name: str, msg: LaserScan):
+        # Convert ranges and test for any valid reading inside physical sensor bounds
         ranges = np.array(msg.ranges)
-        ranges = np.nan_to_num(ranges, nan=10.0, posinf=10.0)
-
-        if len(ranges) == 0:
+        if ranges.size == 0:
             return
 
-        front_ranges = np.concatenate((ranges[:30], ranges[-30:]))
-        min_distance = np.min(front_ranges)
+        finite_mask = np.isfinite(ranges)
+        in_range_mask = (ranges >= self.ir_min) & (ranges <= self.ir_max)
+        blocked = bool(np.any(finite_mask & in_range_mask))
 
-        cmd = TwistStamped()
-        cmd.header.stamp = self.get_clock().now().to_msg()
-        cmd.header.frame_id = 'RobotBody'
+        self.ir_blocked[sensor_name] = blocked
 
-        if min_distance < self.safe_distance:
-            cmd.twist.linear.x = 0.0
-            cmd.twist.angular.z = 0.5
-            self.get_logger().info('Obstacle detected -> Turning')
+        # Simple binary policy: if any front-facing sensor reports blocked, rotate in place;
+        # otherwise drive forward. This uses `front`, `front_left`, `front_right` sensors.
+        front_blocked = self.ir_blocked['front'] or self.ir_blocked['front_left'] or self.ir_blocked['front_right']
+
+        cmd = Twist()
+        if front_blocked:
+            cmd.linear.x = 0.0
+            cmd.angular.z = 0.5
+            self.get_logger().debug('Front blocked -> Turning')
         else:
-            cmd.twist.linear.x = 0.2
-            cmd.twist.angular.z = 0.0
-            self.get_logger().info('Path clear -> Moving forward')
+            cmd.linear.x = 0.2
+            cmd.angular.z = 0.0
+            self.get_logger().debug('Path clear -> Moving forward')
 
         self.publisher.publish(cmd)
 

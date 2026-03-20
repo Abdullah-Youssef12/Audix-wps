@@ -41,7 +41,7 @@ class ObstacleAvoidance(Node):
 
         # Sensor physical bounds (used if LaserScan contains ranges)
         self.ir_min = 0.05
-        self.ir_max = 0.30
+        self.ir_max = 0.15
 
         # Movement parameters (pull + push blending)
         self.declare_parameter('forward_speed', 0.20)    # base pull forward

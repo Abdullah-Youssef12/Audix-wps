@@ -7,8 +7,8 @@ mission_controller:
     obstacle_speed_full: 0.30        # m/s when front path is clear
     obstacle_speed_slow: 0.18        # m/s when obstacle is within detect distance
     obstacle_speed_creep: 0.08       # m/s when obstacle is within danger distance
-    obstacle_detect_distance: 0.25   # m — front obstacle detection threshold
-    obstacle_clear_distance: 0.30    # m — larger threshold to confirm the front path is clear
+    obstacle_detect_distance: 0.15   # m — front obstacle detection threshold (15cm binary)
+    obstacle_clear_distance: 0.15    # m — larger threshold to confirm the front path is clear (15cm)
     obstacle_danger_distance: 0.15   # m — front obstacle creep threshold
     obstacle_side_min: 0.15          # m — minimum allowed side/back clearance
     front_blocked_threshold: 3       # consecutive blocked cycles before halting
@@ -67,6 +67,8 @@ mission_controller:
     straight_line_lift_height: 0.271   # ~80% of 0.3383 m max lift height
     enable_obstacle_avoidance: true
     enable_stop_scan: true
+    # Vector repulsion decay: shorter fade avoids long phantom-tail pushes
+    repulse_decay_sec: 0.5
     status_log_to_terminal: true
     status_log_period_sec: 0.5
     debug_visualization: true

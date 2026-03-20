@@ -4,7 +4,7 @@ mission_controller:
     waypoints: [1.5, 1.1, 0.0, 0.0]
 
     # --- Obstacle avoidance ---
-    safe_distance: 0.25            # m — trigger threshold for front sensors
+    safe_distance: 0.15            # m — trigger threshold for front sensors (15cm)
     side_safe_distance: 0.15       # m — trigger threshold for side sensors
     static_persistence_cycles: 12  # scans before classifying as static
     reroute_lateral_offset: 0.35   # m — strafe offset to bypass static obstacle

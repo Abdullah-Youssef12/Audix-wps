@@ -41,6 +41,25 @@ echo "Starting arena_experiment.launch.py (Gazebo + nodes)..."
 ros2 launch src/audix_pkg/launch/arena_experiment.launch.py &
 LAUNCH_PID=$!
 
+# Ensure we clean up child processes on exit or interrupt
+cleanup() {
+  echo "Cleaning up launcher and rviz..."
+  if [ -n "${RVIZ_PID:-}" ]; then
+    kill "${RVIZ_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${LAUNCH_PID:-}" ]; then
+    kill "${LAUNCH_PID}" 2>/dev/null || true
+  fi
+  # Give processes a moment to exit, then force-kill lingering simulator processes
+  sleep 1
+  pkill -f gz || true
+  pkill -f gz_sim || true
+  pkill -f gzserver || true
+  pkill -f gzclient || true
+  pkill -f rviz2 || true
+}
+trap cleanup EXIT INT TERM
+
 # Give simulator and bridges time to initialize before RViz
 sleep 8
 

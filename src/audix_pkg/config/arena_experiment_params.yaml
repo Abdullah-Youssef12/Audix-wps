@@ -20,9 +20,9 @@ arena_roamer:
     repulsion_gain: 1.75
     escape_gain: 1.25
     angular_kp: 1.6
-    obstacle_detect_distance: 0.44
+    obstacle_detect_distance: 0.15
     obstacle_danger_distance: 0.18
-    obstacle_clear_distance: 0.50
+    obstacle_clear_distance: 0.15
     startup_clearance_distance: 0.24
     hard_escape_distance: 0.12
     hard_escape_speed: 0.08

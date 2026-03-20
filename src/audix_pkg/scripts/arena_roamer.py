@@ -48,9 +48,10 @@ class ArenaRoamer(Node):
         self.declare_parameter('repulsion_gain', 1.75)
         self.declare_parameter('escape_gain', 1.25)
         self.declare_parameter('angular_kp', 1.6)
-        self.declare_parameter('obstacle_detect_distance', 0.42)
-        self.declare_parameter('obstacle_danger_distance', 0.20)
-        self.declare_parameter('obstacle_clear_distance', 0.48)
+        # Use single 15 cm detection/clear distance across the project
+        self.declare_parameter('obstacle_detect_distance', 0.15)
+        self.declare_parameter('obstacle_danger_distance', 0.15)
+        self.declare_parameter('obstacle_clear_distance', 0.15)
         self.declare_parameter('startup_clearance_distance', 0.24)
         self.declare_parameter('hard_escape_distance', 0.12)
         self.declare_parameter('hard_escape_speed', 0.10)
@@ -221,10 +222,10 @@ class ArenaRoamer(Node):
 
         self.ir = {name: float('inf') for name in self.sensor_names}
         self.ir_raw = dict(self.ir)
-        self.ir_range_max = {key: 0.30 for key in self.ir}
+        self.ir_range_max = {key: 0.15 for key in self.ir}
         self.sensor_last_update_sec = {key: None for key in self.ir}
         self.ir_default_range_min = 0.05
-        self.ir_default_range_max = 0.30
+        self.ir_default_range_max = 0.15
         self.ir_half_fov = 0.30543
 
         self.sensor_positions = {
@@ -818,6 +819,41 @@ class ArenaRoamer(Node):
             outline.points.extend(arc_points)
             outline.points.append(self._make_point(origin_x, origin_y, 0.09))
             markers.append(outline)
+
+            # Draw a threshold arc at the configured detect distance so RViz
+            # clearly indicates the IR trigger radius (e.g., 0.15 m)
+            range_max = self.ir_range_max.get(sensor_name, self.ir_default_range_max)
+            if not math.isfinite(range_max):
+                range_max = self.ir_default_range_max
+            detect_range = min(self.obstacle_detect_distance, range_max)
+            threshold_arc = []
+            for step in range(arc_segments + 1):
+                ratio = step / arc_segments
+                ray_angle = sensor_yaw - self.ir_half_fov + (2.0 * self.ir_half_fov * ratio)
+                threshold_arc.append(
+                    self._make_point(
+                        origin_x + detect_range * math.cos(ray_angle),
+                        origin_y + detect_range * math.sin(ray_angle),
+                        0.092,
+                    )
+                )
+            thr = Marker()
+            thr.header.frame_id = self.debug_frame_id
+            thr.header.stamp = now
+            thr.ns = 'arena_ir_threshold'
+            thr.id = 1300 + index
+            thr.type = Marker.LINE_STRIP
+            thr.action = Marker.ADD
+            thr.pose.orientation.w = 1.0
+            thr.scale.x = 0.02
+            thr.color.r = 1.0
+            thr.color.g = 1.0
+            thr.color.b = 0.2
+            thr.color.a = 0.7
+            thr.points.append(self._make_point(origin_x, origin_y, 0.092))
+            thr.points.extend(threshold_arc)
+            thr.points.append(self._make_point(origin_x, origin_y, 0.092))
+            markers.append(thr)
 
             origin = Marker()
             origin.header.frame_id = self.debug_frame_id

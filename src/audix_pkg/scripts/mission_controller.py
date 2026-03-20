@@ -68,8 +68,8 @@ class MissionController(Node):
         self.declare_parameter('obstacle_speed_full', 0.30)
         self.declare_parameter('obstacle_speed_slow', 0.18)
         self.declare_parameter('obstacle_speed_creep', 0.08)
-        self.declare_parameter('obstacle_detect_distance', 0.25)
-        self.declare_parameter('obstacle_clear_distance', 0.30)
+        self.declare_parameter('obstacle_detect_distance', 0.15)
+        self.declare_parameter('obstacle_clear_distance', 0.15)
         self.declare_parameter('obstacle_danger_distance', 0.15)
         self.declare_parameter('obstacle_side_min', 0.15)
         self.declare_parameter('front_blocked_threshold', 3)
@@ -321,7 +321,7 @@ class MissionController(Node):
         }
         self.ir_half_fov = 0.30543
         self.ir_default_range_min = 0.05
-        self.ir_default_range_max = 0.30
+        self.ir_default_range_max = 0.15
         self.front_extent = abs(self.sensor_positions['front'][0] - self.robot_center_offset_x)
         self.back_extent = abs(self.sensor_positions['back'][0] - self.robot_center_offset_x)
         self.left_extent = abs(self.sensor_positions['left'][1] - self.robot_center_offset_y)
@@ -334,7 +334,7 @@ class MissionController(Node):
         self.declare_parameter('repulse_M_front_corner', 0.30)
         self.declare_parameter('repulse_M_side', 0.25)
         self.declare_parameter('repulse_M_back', 0.12)
-        self.declare_parameter('repulse_decay_sec', 1.0)
+        self.declare_parameter('repulse_decay_sec', 0.5)
         self.declare_parameter('repulse_angular_gain', 1.2)
 
         self.repulse_M_front = float(self.get_parameter('repulse_M_front').value)
@@ -749,6 +749,13 @@ class MissionController(Node):
                 # defensive: if repulsion fails, fall back to original command
                 pass
 
+            # Prevent reversing during evasions: keep forward command non-negative.
+            # This avoids the controller commanding negative vx when repulsion
+            # pushes the integrated vector backwards, which caused the robot to
+            # drive in reverse while trying to evade.
+            if vx < 0.0:
+                vx = 0.0
+
         target_vx = max(-self.max_lin, min(self.max_lin, vx))
         target_vy = max(-self.max_lin, min(self.max_lin, vy))
         target_wz = max(-self.max_ang, min(self.max_ang, wz))
@@ -806,7 +813,9 @@ class MissionController(Node):
 
     def _compute_vector_repulsion(self):
         """Compute a repulsion vector (vx, vy, wz) based on binary-style IR triggers.
-        Uses phantom-tail decay from last trigger times so brief hits continue to influence motion.
+        Uses simple square-wave phantom-tail decay: when a sensor triggers it
+        applies full repulsive force until the decay timer expires.
+        Rotation is disabled during evasions to avoid vaulting/instability.
         """
         now_s = self.get_clock().now().nanoseconds / 1e9
         angles = {
@@ -821,9 +830,11 @@ class MissionController(Node):
         rx = 0.0
         ry = 0.0
 
+        # Design choice: front-facing obstacles should NOT command the robot
+        # to reverse. Instead we produce lateral (y) repulsion so the robot
+        # strafes/curves away. Back obstacles push forward (positive rx).
         for name in ('front', 'front_left', 'front_right', 'left', 'right', 'back'):
             active = False
-            # active if sensor distance is below detect threshold or within decay time
             dist = self._sensor_range_for_detection(name)
             if math.isfinite(dist) and dist <= self.obstacle_detect_distance:
                 active = True
@@ -845,12 +856,20 @@ class MissionController(Node):
                 M = self.repulse_M_back
 
             theta = angles[name]
-            # repulsion is away from obstacle (negative sensor bearing)
-            rx += -M * math.cos(theta)
-            ry += -M * math.sin(theta)
+            # For front and front-corner sensors: translate repulsion into a
+            # lateral push away from the obstacle, not a backward push.
+            if name in ('front', 'front_left', 'front_right'):
+                # y positive is left; for front_left we want to push right (y negative)
+                ry += -math.copysign(M, theta)
+            elif name in ('left', 'right'):
+                # side sensors naturally produce lateral force away from obstacle
+                ry += -M * math.sin(theta)
+            else:
+                # back sensor: push forward
+                rx += -M * math.cos(theta)
 
-        # angular flare proportional to lateral push
-        rw = self.repulse_angular_gain * (-ry)
+        # Rotation disabled during evasions to avoid simulator instability
+        rw = 0.0
 
         return rx, ry, rw
 

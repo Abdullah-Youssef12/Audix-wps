@@ -329,6 +329,24 @@ class MissionController(Node):
         self.robot_length = self.front_extent + self.back_extent
         self.robot_width = self.left_extent + self.right_extent
 
+        # Vector repulsion params (integrated avoidance to ensure single-writer to /cmd_vel)
+        self.declare_parameter('repulse_M_front', 0.30)
+        self.declare_parameter('repulse_M_front_corner', 0.30)
+        self.declare_parameter('repulse_M_side', 0.25)
+        self.declare_parameter('repulse_M_back', 0.12)
+        self.declare_parameter('repulse_decay_sec', 1.0)
+        self.declare_parameter('repulse_angular_gain', 1.2)
+
+        self.repulse_M_front = float(self.get_parameter('repulse_M_front').value)
+        self.repulse_M_front_corner = float(self.get_parameter('repulse_M_front_corner').value)
+        self.repulse_M_side = float(self.get_parameter('repulse_M_side').value)
+        self.repulse_M_back = float(self.get_parameter('repulse_M_back').value)
+        self.repulse_decay_sec = float(self.get_parameter('repulse_decay_sec').value)
+        self.repulse_angular_gain = float(self.get_parameter('repulse_angular_gain').value)
+
+        # Timestamp of last trigger per sensor for phantom-tail decay
+        self._last_ir_trigger = {k: 0.0 for k in self.ir}
+
         # Debug visualization state
         self.robot_path_points = []
         self.last_path_point = None
@@ -424,6 +442,14 @@ class MissionController(Node):
             self.ir[key] = float('inf')
         else:
             self.ir[key] = filtered_proxy
+        # update last trigger timestamp for binary-style repulsion logic
+        try:
+            now_s = self.get_clock().now().nanoseconds / 1e9
+            if math.isfinite(raw_value) and raw_value <= self.obstacle_detect_distance:
+                self._last_ir_trigger[key] = now_s
+        except Exception:
+            # be defensive if called early during init
+            pass
 
     def _odom_cb(self, msg: Odometry):
         self.x = msg.pose.pose.position.x
@@ -707,6 +733,22 @@ class MissionController(Node):
 
     def _publish_cmd(self, vx=0.0, vy=0.0, wz=0.0):
         now = self.get_clock().now()
+        # Apply integrated vector-repulsion avoidance before clamping/slewing
+        if self.enable_obstacle_avoidance and self.state in (
+            State.MOVE_FORWARD,
+            State.ROTATE_TO_TARGET,
+            State.ROTATE_TO_SCAN,
+            State.ROTATE_BACK_TO_PATH,
+        ):
+            try:
+                rx, ry, rw = self._compute_vector_repulsion()
+                vx = vx + rx
+                vy = vy + ry
+                wz = wz + rw
+            except Exception:
+                # defensive: if repulsion fails, fall back to original command
+                pass
+
         target_vx = max(-self.max_lin, min(self.max_lin, vx))
         target_vy = max(-self.max_lin, min(self.max_lin, vy))
         target_wz = max(-self.max_ang, min(self.max_ang, wz))
@@ -761,6 +803,56 @@ class MissionController(Node):
             + math.cos(yaw) * self.robot_center_offset_y
         )
         return center_x, center_y
+
+    def _compute_vector_repulsion(self):
+        """Compute a repulsion vector (vx, vy, wz) based on binary-style IR triggers.
+        Uses phantom-tail decay from last trigger times so brief hits continue to influence motion.
+        """
+        now_s = self.get_clock().now().nanoseconds / 1e9
+        angles = {
+            'front': 0.0,
+            'front_left': math.radians(35.0),
+            'front_right': -math.radians(35.0),
+            'left': math.pi / 2.0,
+            'right': -math.pi / 2.0,
+            'back': math.pi,
+        }
+
+        rx = 0.0
+        ry = 0.0
+
+        for name in ('front', 'front_left', 'front_right', 'left', 'right', 'back'):
+            active = False
+            # active if sensor distance is below detect threshold or within decay time
+            dist = self._sensor_range_for_detection(name)
+            if math.isfinite(dist) and dist <= self.obstacle_detect_distance:
+                active = True
+            else:
+                last = self._last_ir_trigger.get(name, 0.0)
+                if (now_s - last) <= self.repulse_decay_sec:
+                    active = True
+
+            if not active:
+                continue
+
+            if name == 'front':
+                M = self.repulse_M_front
+            elif name in ('front_left', 'front_right'):
+                M = self.repulse_M_front_corner
+            elif name in ('left', 'right'):
+                M = self.repulse_M_side
+            else:
+                M = self.repulse_M_back
+
+            theta = angles[name]
+            # repulsion is away from obstacle (negative sensor bearing)
+            rx += -M * math.cos(theta)
+            ry += -M * math.sin(theta)
+
+        # angular flare proportional to lateral push
+        rw = self.repulse_angular_gain * (-ry)
+
+        return rx, ry, rw
 
     def _closest_front_obstacle(self):
         return min(self.ir['front'], self.ir['front_left'], self.ir['front_right'])

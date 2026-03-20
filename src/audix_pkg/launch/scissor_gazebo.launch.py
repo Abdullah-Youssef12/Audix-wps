@@ -36,6 +36,8 @@ def generate_launch_description():
 
     robot_description = Command(['xacro ', model_path])
 
+    use_robot_state_publisher = LaunchConfiguration('use_robot_state_publisher')
+
     # ── Environment so Gazebo can find meshes ─────────────────────────
     gz_resource_path = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
@@ -61,6 +63,7 @@ def generate_launch_description():
             {'robot_description': ParameterValue(robot_description, value_type=str)},
             {'use_sim_time': True},
         ],
+        condition=IfCondition(use_robot_state_publisher),
     )
 
     # ── Static TF: world → odom ─────────────────────────────────────
@@ -268,6 +271,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument('use_robot_state_publisher', default_value='true', description='Launch robot_state_publisher'),
         DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2'),
         DeclareLaunchArgument('use_gazebo_gui', default_value='true', description='Launch Gazebo GUI client'),
         DeclareLaunchArgument('use_slider_gui', default_value='true', description='Launch scissor slider GUI'),

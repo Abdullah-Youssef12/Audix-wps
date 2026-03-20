@@ -6,6 +6,15 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
+import os
+
+# Prevent this standalone avoidance node from running by default. The integrated
+# `mission_controller.py` now performs vector-repulsion avoidance to guarantee a
+# single writer to `/cmd_vel`. To enable the separate node for testing set
+# `AUDIX_ALLOW_EXTERNAL_AVOIDANCE=1` in the environment before launching.
+if os.environ.get('AUDIX_ALLOW_EXTERNAL_AVOIDANCE', '0') != '1':
+    print('External obstacle_avoidance disabled by environment; exiting.')
+    raise SystemExit(0)
 
 
 class ObstacleAvoidance(Node):
@@ -22,33 +31,56 @@ class ObstacleAvoidance(Node):
             'back': '/ir_back/scan',
         }
 
-        # Debounce counters and blocked state
-        self.declare_parameter('debounce_count', 3)
+        # Debounce counters and blocked state (keep minimal debounce for noisy sensors)
+        self.declare_parameter('debounce_count', 1)
         self.debounce_count = max(1, int(self.get_parameter('debounce_count').value))
         self._counters = {name: 0 for name in self.sensor_topics}
         self.ir_blocked = {name: False for name in self.sensor_topics}
+        # Phantom-tail timestamps for force decay after sensor clears
+        self.last_trigger_time = {name: 0.0 for name in self.sensor_topics}
 
-        # Sensor physical bounds
+        # Sensor physical bounds (used if LaserScan contains ranges)
         self.ir_min = 0.05
         self.ir_max = 0.30
 
-        # Movement parameters (suggested avoidance speeds)
-        self.declare_parameter('forward_speed', 0.20)
-        self.declare_parameter('lateral_speed', 0.15)
-        self.declare_parameter('evade_forward_speed', 0.15)
-        self.declare_parameter('evade_lateral_speed', 0.20)
+        # Movement parameters (pull + push blending)
+        self.declare_parameter('forward_speed', 0.20)    # base pull forward
+        self.declare_parameter('vx_max_forward', 0.30)
+        self.declare_parameter('vx_max_brake', 0.25)
+        self.declare_parameter('vy_max', 0.35)
+
+        # Evade magnitudes (fixed-magnitude binary pushes)
+        self.declare_parameter('M_front', 0.30)
+        self.declare_parameter('M_front_corner', 0.30)
+        self.declare_parameter('M_side', 0.25)
+        self.declare_parameter('M_back', 0.12)
+
+        # Phantom tail decay: keep pushing for this many seconds after sensor clears
+        self.declare_parameter('force_decay_sec', 1.0)
+
+        # Angular flare gain (proportional to lateral push)
+        self.declare_parameter('evade_angular_gain', 1.2)
+
+        # Smoothing / ramping
         self.declare_parameter('ramp_step_linear', 0.05)
         self.declare_parameter('ramp_step_lateral', 0.05)
-        self.declare_parameter('clearance_time_sec', 0.8)
         self.declare_parameter('control_rate', 10.0)
 
         self.forward_speed = float(self.get_parameter('forward_speed').value)
-        self.lateral_speed = float(self.get_parameter('lateral_speed').value)
-        self.evade_forward_speed = float(self.get_parameter('evade_forward_speed').value)
-        self.evade_lateral_speed = float(self.get_parameter('evade_lateral_speed').value)
+        self.vx_max_forward = float(self.get_parameter('vx_max_forward').value)
+        self.vx_max_brake = float(self.get_parameter('vx_max_brake').value)
+        self.vy_max = float(self.get_parameter('vy_max').value)
+
+        self.M_front = float(self.get_parameter('M_front').value)
+        self.M_front_corner = float(self.get_parameter('M_front_corner').value)
+        self.M_side = float(self.get_parameter('M_side').value)
+        self.M_back = float(self.get_parameter('M_back').value)
+
+        self.force_decay_sec = float(self.get_parameter('force_decay_sec').value)
+        self.evade_angular_gain = float(self.get_parameter('evade_angular_gain').value)
+
         self.ramp_step_linear = float(self.get_parameter('ramp_step_linear').value)
         self.ramp_step_lateral = float(self.get_parameter('ramp_step_lateral').value)
-        self.clearance_time_sec = float(self.get_parameter('clearance_time_sec').value)
         self.control_rate = float(self.get_parameter('control_rate').value)
 
         # Publish suggestions to /avoid_cmd_vel (roamer will optionally accept)
@@ -66,12 +98,6 @@ class ObstacleAvoidance(Node):
         # Internal command smoothing state
         self.current_cmd = Twist()
         self.target_cmd = Twist()
-        self.blocked_side = None
-
-        # State machine variables
-        self.state = 'NOMINAL'  # NOMINAL, FRONT_BLOCKED, EVADE_RIGHT, EVADE_LEFT
-        self.clearance_required_ticks = max(1, int(self.clearance_time_sec * self.control_rate))
-        self.clearance_ticks_remaining = 0
 
         # Control loop
         self.create_timer(1.0 / self.control_rate, self.control_loop)
@@ -95,11 +121,9 @@ class ObstacleAvoidance(Node):
         # effective blocked only when counter reaches threshold
         prev = self.ir_blocked[sensor_name]
         self.ir_blocked[sensor_name] = (self._counters[sensor_name] >= self.debounce_count)
-        # record when a side just cleared
-        if prev and not self.ir_blocked[sensor_name]:
-            # if left/right cleared, start post-clearance hold
-            if sensor_name in ('left', 'front_left', 'front_right', 'right'):
-                self.last_clear_time = time.time()
+        # update last trigger timestamp when blocked
+        if self.ir_blocked[sensor_name]:
+            self.last_trigger_time[sensor_name] = time.time()
 
     def _ramp_toward(self, current, target, step):
         if current < target:
@@ -109,86 +133,75 @@ class ObstacleAvoidance(Node):
         return current
 
     def control_loop(self):
-        # Decide target command based on debounced binary sensors using a commitment
+        # Vector Repulsion approach: compute per-sensor repulsion forces and blend
         tcmd = Twist()
+        now = time.time()
 
-        front = self.ir_blocked['front']
-        fl = self.ir_blocked['front_left']
-        fr = self.ir_blocked['front_right']
-        left = self.ir_blocked['left']
-        right = self.ir_blocked['right']
+        # sensor angles in robot frame (radians): front=0, front_left=+35deg, front_right=-35deg, left=+90deg, right=-90deg, back=180deg
+        angles = {
+            'front': 0.0,
+            'front_left': np.deg2rad(35.0),
+            'front_right': -np.deg2rad(35.0),
+            'left': np.pi / 2.0,
+            'right': -np.pi / 2.0,
+            'back': np.pi,
+        }
 
-        # State transitions and outputs
-        if self.state == 'NOMINAL':
-            if not front and not fl and not fr:
-                # stay nominal: go forward
-                tcmd.linear.x = self.forward_speed
-                tcmd.linear.y = 0.0
-                tcmd.angular.z = 0.0
+        # accumulate repulsion
+        rx = 0.0
+        ry = 0.0
+
+        # helper to get min valid distance from last scan if available
+        def _min_distance_for(sensor_name):
+            # We don't store ranges per sensor long-term; rely on binary detection.
+            # If more precise distances are required, extend scan_callback to save min distances.
+            return None
+
+        for name in self.sensor_topics:
+            active = False
+            # active if currently blocked or within decay window from last trigger
+            if self.ir_blocked.get(name, False):
+                active = True
             else:
-                if front:
-                    # immediate reaction to wall ahead
-                    self.state = 'FRONT_BLOCKED'
-                elif fl:
-                    # left corner clipping -> evade right
-                    self.state = 'EVADE_RIGHT'
-                    self.clearance_ticks_remaining = self.clearance_required_ticks
-                elif fr:
-                    self.state = 'EVADE_LEFT'
-                    self.clearance_ticks_remaining = self.clearance_required_ticks
+                last = self.last_trigger_time.get(name, 0.0)
+                if (now - last) <= self.force_decay_sec:
+                    active = True
 
-        elif self.state == 'FRONT_BLOCKED':
-            # drop forward velocity and prefer sliding to clear
-            tcmd.linear.x = 0.0
-            tcmd.angular.z = 0.0
-            # prefer side that is clear
-            if not right:
-                tcmd.linear.y = -abs(self.lateral_speed)
-            elif not left:
-                tcmd.linear.y = abs(self.lateral_speed)
+            if not active:
+                continue
+
+            # choose M_max for sensor
+            if name == 'front':
+                M = self.M_front
+            elif name in ('front_left', 'front_right'):
+                M = self.M_front_corner
+            elif name in ('left', 'right'):
+                M = self.M_side
             else:
-                # trapped: spin as last resort
-                tcmd.linear.y = 0.0
-                tcmd.angular.z = 0.6
+                M = self.M_back
 
-            # exit to NOMINAL immediately when front clears
-            if not front:
-                self.state = 'NOMINAL'
+            theta = angles[name]
+            # repulsion directed away from obstacle: negative of sensor direction
+            rx += -M * np.cos(theta)
+            ry += -M * np.sin(theta)
 
-        elif self.state == 'EVADE_RIGHT':
-            # while front_left is blocked, maintain evade vector and reset timer
-            if fl:
-                tcmd.linear.x = self.evade_forward_speed
-                tcmd.linear.y = -abs(self.evade_lateral_speed)
-                tcmd.angular.z = 0.0
-                self.clearance_ticks_remaining = self.clearance_required_ticks
-            else:
-                # count down clearance ticks; if interrupted, reset
-                if self.clearance_ticks_remaining > 0:
-                    self.clearance_ticks_remaining -= 1
-                if self.clearance_ticks_remaining <= 0:
-                    self.state = 'NOMINAL'
-                else:
-                    # continue sliding until timer expires
-                    tcmd.linear.x = self.evade_forward_speed
-                    tcmd.linear.y = -abs(self.evade_lateral_speed)
-                    tcmd.angular.z = 0.0
+        # Pull (goal) vector
+        gx = self.forward_speed
+        gy = 0.0
 
-        elif self.state == 'EVADE_LEFT':
-            if fr:
-                tcmd.linear.x = self.evade_forward_speed
-                tcmd.linear.y = abs(self.evade_lateral_speed)
-                tcmd.angular.z = 0.0
-                self.clearance_ticks_remaining = self.clearance_required_ticks
-            else:
-                if self.clearance_ticks_remaining > 0:
-                    self.clearance_ticks_remaining -= 1
-                if self.clearance_ticks_remaining <= 0:
-                    self.state = 'NOMINAL'
-                else:
-                    tcmd.linear.x = self.evade_forward_speed
-                    tcmd.linear.y = abs(self.evade_lateral_speed)
-                    tcmd.angular.z = 0.0
+        cmd_x = gx + rx
+        cmd_y = gy + ry
+
+        # clamp
+        cmd_x = float(max(-self.vx_max_brake, min(self.vx_max_forward, cmd_x)))
+        cmd_y = float(max(-self.vy_max, min(self.vy_max, cmd_y)))
+
+        # angular flare proportional to lateral push
+        cmd_w = float(self.evade_angular_gain * (-cmd_y))
+
+        tcmd.linear.x = cmd_x
+        tcmd.linear.y = cmd_y
+        tcmd.angular.z = cmd_w
 
         # ramp toward target for smoothness
         cur_x = self.current_cmd.linear.x

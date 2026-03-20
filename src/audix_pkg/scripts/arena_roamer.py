@@ -105,6 +105,9 @@ class ArenaRoamer(Node):
         self.declare_parameter('blocked_goal_forward_bonus', 1.20)
         self.declare_parameter('avoid_commit_cycles', 5)
         self.declare_parameter('avoid_forward_cycles', 8)
+        # avoidance override parameters
+        self.declare_parameter('avoid_override_enable', True)
+        self.declare_parameter('avoid_override_timeout_sec', 0.8)
 
         self.arena_min_x = float(self.get_parameter('arena_min_x').value)
         self.arena_max_x = float(self.get_parameter('arena_max_x').value)
@@ -187,6 +190,8 @@ class ArenaRoamer(Node):
         self.avoid_commit_cycles = max(1, int(self.get_parameter('avoid_commit_cycles').value))
         self.avoid_forward_cycles = max(1, int(self.get_parameter('avoid_forward_cycles').value))
         self.blocked_clearance_margin = float(self.get_parameter('blocked_clearance_margin').value)
+        self.avoid_override_enable = bool(self.get_parameter('avoid_override_enable').value)
+        self.avoid_override_timeout = float(self.get_parameter('avoid_override_timeout_sec').value)
 
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.path_pub = self.create_publisher(Path, '/debug/planned_path', 10)
@@ -204,6 +209,15 @@ class ArenaRoamer(Node):
             'back': '/ir_back/scan',
         }.items():
             self.create_subscription(LaserScan, topic, lambda msg, k=key: self._ir_cb(k, msg), 10)
+
+        # Optional avoidance override topic: short-lived reflexive commands
+        self.last_avoid_cmd = None
+        self.last_avoid_time = 0.0
+        self.create_subscription(Twist, '/avoid_cmd_vel', self._avoid_cb, 10)
+
+        # timers, debug publishers, and goal keepouts
+        self.create_timer(self.control_period, self._control_loop)
+        self.create_timer(0.2, self._publish_debug)
 
         self.ir = {name: float('inf') for name in self.sensor_names}
         self.ir_raw = dict(self.ir)
@@ -264,28 +278,10 @@ class ArenaRoamer(Node):
         self.blocked_clearance_origin = None  # (x, y, yaw)
         self.blocked_clearance_target = 0.0
 
-        self.create_timer(self.control_period, self._control_loop)
-        self.create_timer(0.2, self._publish_debug)
-
-        self.goal_keepouts = [
-            (-0.6, 3.1, self.goal_keepout_radius),
-            (2.4, 2.5, self.goal_keepout_radius),
-            (-0.6, -3.1, self.goal_keepout_radius),
-            (2.4, -2.5, self.goal_keepout_radius),
-            (0.0, 0.0, 1.35),
-        ]
-
-        if self.control_mode == 'acceptance_path':
-            self.get_logger().info(
-                'Arena acceptance controller ready. Route=%s with %d waypoints.' % (
-                    self.route_name,
-                    len(self.route_waypoints),
-                )
-            )
-        else:
-            self.get_logger().info(
-                'Arena roamer ready. Click-spawn obstacles in the sandbox and the robot will keep roaming.'
-            )
+    def _avoid_cb(self, msg):
+        # store the latest avoidance suggestion and timestamp
+        self.last_avoid_cmd = msg
+        self.last_avoid_time = self._now_sec()
 
     def _build_route_waypoints(self, route_name):
         routes = {
@@ -1191,6 +1187,40 @@ class ArenaRoamer(Node):
         return self._now_sec() < self.escape_hold_until_sec
 
     def _publish_cmd(self, vx, vy, wz):
+        # Reflexive avoidance override: if a recent /avoid_cmd_vel exists, use it
+        now = self._now_sec()
+        if self.avoid_override_enable and self.last_avoid_cmd is not None and (now - self.last_avoid_time) <= self.avoid_override_timeout:
+            cmd = Twist()
+            # copy suggested command but enforce sensor gating and speed limits
+            cmd.linear.x = float(self.last_avoid_cmd.linear.x)
+            cmd.linear.y = float(self.last_avoid_cmd.linear.y)
+            cmd.angular.z = float(self.last_avoid_cmd.angular.z)
+
+            # Binary sensor gating: stop motion along an axis if relevant sensors are blocked
+            if cmd.linear.x > 0.0 and self._sensors_blocked_any('front', 'front_left', 'front_right'):
+                cmd.linear.x = 0.0
+            if cmd.linear.y > 0.0 and self._sensors_blocked_any('left', 'front_left'):
+                cmd.linear.y = 0.0
+            if cmd.linear.y < 0.0 and self._sensors_blocked_any('right', 'front_right'):
+                cmd.linear.y = 0.0
+            if cmd.linear.x < 0.0 and self._sensors_blocked_any('back'):
+                cmd.linear.x = 0.0
+
+            # enforce max speeds
+            cmd.linear.x = clamp(cmd.linear.x, -self.max_linear_speed, self.max_linear_speed)
+            cmd.linear.y = clamp(cmd.linear.y, -self.max_lateral_speed, self.max_lateral_speed)
+            cmd.angular.z = clamp(cmd.angular.z, -self.max_angular_speed, self.max_angular_speed)
+
+            # publish and update last command state
+            self.cmd_pub.publish(cmd)
+            # update last_cmd_* for continuity
+            # Note: store internal representation (vx, vy, wz) consistent with prior usage
+            self.last_cmd_vx = cmd.linear.x / (self.cmd_forward_sign if self.cmd_forward_sign != 0 else 1.0)
+            self.last_cmd_vy = cmd.linear.y
+            self.last_cmd_wz = cmd.angular.z
+            self.last_cmd_time_sec = now
+            return
+
         # Binary sensor gating: stop motion along an axis if relevant sensors are blocked
         if vx > 0.0 and self._sensors_blocked_any('front', 'front_left', 'front_right'):
             vx = 0.0

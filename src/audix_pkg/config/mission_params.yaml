@@ -1,62 +1,54 @@
-mission_controller:
+yamlmission_controller:
   ros__parameters:
-    # Shelf-centered stops along the aisle centerline (x=0.0), ordered south -> center -> north.
-    # Format: [x, y, yaw, lift_target]
     waypoints: [0.0, -2.4, 0.0, 0.25, 0.0, 0.0, 3.14159, 0.25, 0.0, 2.4, 0.0, 0.25]
-
-    # --- Obstacle avoidance ---
-    obstacle_speed_full: 0.30        # m/s when front path is clear
-    obstacle_speed_slow: 0.18        # m/s when obstacle is within detect distance
-    obstacle_speed_creep: 0.08       # m/s when obstacle is within danger distance
-    obstacle_detect_distance: 0.25   # m — front obstacle detection threshold (25cm binary)
-    obstacle_clear_distance: 0.25    # m — larger threshold to confirm the front path is clear (25cm)
-    obstacle_danger_distance: 0.25   # m — front obstacle creep threshold
-    obstacle_side_min: 0.15          # m — minimum allowed side/back clearance
-    front_blocked_threshold: 3       # consecutive blocked cycles before halting
-    clear_threshold: 5               # consecutive clear cycles before resuming
-    reroute_strafe_speed: 0.24       # m/s lateral reroute speed
-    reroute_creep_speed: 0.18        # m/s forward creep during reroute
-    reroute_lateral_distance: 0.42   # m target offset from the original path centerline
-    reroute_advance_distance: 0.45   # m strafe/advance distance for bypass box
-    reroute_return_lookahead: 0.18   # m forward lookahead while rejoining the path
-    reroute_rejoin_extra_distance: 0.30  # m additional forward pass before rejoin is allowed
-    reroute_side_clearance: 0.20     # m required obstacle-side IR clearance before rejoin
-    reroute_side_clear_hysteresis: 0.03  # m extra margin before a side is considered safely clear again
-    reroute_side_clear_cycles: 6     # consecutive control cycles with side clearance before rejoin
-    obstacle_memory_clear_cycles: 6  # consecutive clear cycles before a blocked-side choice can be forgotten
-    obstacle_halt_timeout: 3.0       # s to wait after detection before deciding to reroute
-    obstacle_safety_margin: 0.06     # m footprint inflation around sensed obstacle envelope
-    obstacle_path_corridor_margin: 0.03  # m extra swept-path corridor width for IR path blocking
-    obstacle_envelope_cone_gain: 0.60    # scales cone-width inflation so off-axis hits still grow a realistic envelope
-    reroute_return_tolerance: 0.05   # m tolerance to consider path line rejoined
-    obstacle_return_tolerance: 0.02  # m tighter lateral tolerance used during offset/rejoin transitions
-    reroute_timeout: 20.0            # s maximum reroute duration
-    reroute_wall_follow_distance: 0.70   # m obstacle can extend alongside the bypass before treating it like a wall
-    reroute_rotation_search_angle_deg: 55.0  # deg in-place scan used when lateral reroute behaves like a wall
-    reroute_rotation_clear_distance: 0.28    # m front clearance that ends the rotation search early
-    reroute_rotation_max_attempts: 2         # avoid endless rotate-replan loops during one obstacle event
-    obstacle_sensor_warmup_sec: 2.0  # ignore startup sensor transients
-    ir_filter_alpha_rise: 0.18       # slower rise so sudden clear readings need confirmation
-    ir_filter_alpha_fall: 0.70       # faster fall so approaching obstacles are trusted quickly
-    optimized_rejoin_min_lookahead: 0.04  # m minimum forward bias when obstacle vanishes during reroute
-    optimized_rejoin_lateral_gain: 0.35   # scales lookahead down as the robot gets closer to the centerline
-
-    # --- Scissor lift ---
-    lift_dwell_time: 2.0           # seconds to hold at scan height
-    lift_position_tolerance: 0.003 # m — when to consider lift at target
-    lift_motion_time: 2.0          # seconds to allow lift motion up/down
-
-    # --- Navigation tuning ---
+    obstacle_speed_full: 0.30
+    obstacle_speed_slow: 0.18
+    obstacle_speed_creep: 0.08
+    obstacle_detect_distance: 0.25
+    obstacle_clear_distance: 0.25
+    obstacle_danger_distance: 0.25
+    obstacle_side_min: 0.15
+    front_blocked_threshold: 3
+    clear_threshold: 5
+    reroute_strafe_speed: 0.24
+    reroute_creep_speed: 0.18
+    reroute_lateral_distance: 0.42
+    reroute_advance_distance: 0.45
+    reroute_return_lookahead: 0.18
+    reroute_rejoin_extra_distance: 0.30
+    reroute_side_clearance: 0.20
+    reroute_side_clear_hysteresis: 0.03
+    reroute_side_clear_cycles: 6
+    obstacle_memory_clear_cycles: 6
+    obstacle_halt_timeout: 3.0
+    obstacle_safety_margin: 0.06
+    obstacle_path_corridor_margin: 0.03
+    obstacle_envelope_cone_gain: 0.60
+    reroute_return_tolerance: 0.05
+    obstacle_return_tolerance: 0.02
+    reroute_timeout: 20.0
+    reroute_wall_follow_distance: 0.70
+    reroute_rotation_search_angle_deg: 55.0
+    reroute_rotation_clear_distance: 0.28
+    reroute_rotation_max_attempts: 2
+    obstacle_sensor_warmup_sec: 2.0
+    ir_filter_alpha_rise: 0.18
+    ir_filter_alpha_fall: 0.70
+    optimized_rejoin_min_lookahead: 0.04
+    optimized_rejoin_lateral_gain: 0.35
+    lift_dwell_time: 2.0
+    lift_position_tolerance: 0.003
+    lift_motion_time: 2.0
     linear_kp: 0.5
     angular_kp: 1.5
-    scan_angle_tolerance: 0.12      # rad tolerance for scan/return turns
-    scan_rotation_kp_scale: 1.6    # multiplier for faster scan/return rotations
-    scan_rotation_min_speed: 0.25  # rad/s minimum turn speed to avoid stalling
-    scan_rotation_max_speed: 1.0   # rad/s cap for scan/return rotations
-    max_linear_speed: 0.3          # m/s
-    max_angular_speed: 1.0         # rad/s
-    position_tolerance: 0.05       # m
-    angle_tolerance: 0.08          # rad
+    scan_angle_tolerance: 0.12
+    scan_rotation_kp_scale: 1.6
+    scan_rotation_min_speed: 0.25
+    scan_rotation_max_speed: 1.0
+    max_linear_speed: 0.3
+    max_angular_speed: 1.0
+    position_tolerance: 0.05
+    angle_tolerance: 0.08
     scan_turn_degrees: 90.0
     scan_turn_direction: left
     scripted_skid_scan_mode: false
@@ -65,10 +57,9 @@ mission_controller:
     scan_use_lift: true
     straight_line_only: false
     straight_line_distance: 7.2
-    straight_line_lift_height: 0.271   # ~80% of 0.3383 m max lift height
+    straight_line_lift_height: 0.271
     enable_obstacle_avoidance: true
     enable_stop_scan: true
-    # Vector repulsion decay: shorter fade avoids long phantom-tail pushes
     repulse_decay_sec: 0.5
     status_log_to_terminal: true
     status_log_period_sec: 0.5
@@ -77,23 +68,23 @@ mission_controller:
     debug_path_max_points: 2500
     robot_center_offset_x: 0.0
     robot_center_offset_y: 0.0
-    cmd_linear_accel_limit: 0.9     # m/s^2 forward acceleration limit
-    cmd_linear_decel_limit: 1.8     # m/s^2 forward braking limit
-    cmd_lateral_accel_limit: 1.1    # m/s^2 lateral acceleration limit
-    cmd_lateral_decel_limit: 2.2    # m/s^2 lateral braking limit
-    cmd_angular_accel_limit: 2.8    # rad/s^2 angular acceleration limit
-    cmd_angular_decel_limit: 4.5    # rad/s^2 angular braking limit
+    cmd_linear_accel_limit: 0.9
+    cmd_linear_decel_limit: 1.8
+    cmd_lateral_accel_limit: 1.1
+    cmd_lateral_decel_limit: 2.2
+    cmd_angular_accel_limit: 2.8
+    cmd_angular_decel_limit: 4.5
 
 mecanum_kinematics:
   ros__parameters:
-    wheel_radius: 0.0485           # m
-    wheel_base_half: 0.09          # m  (half front-to-back axle distance)
-    track_width_half: 0.1574       # m  (half left-to-right wheel distance)
-    robot_body_frame_flip_180: true  # RobotBody is pi-rotated from base_link
-    invert_linear_x: false           # Forward commands should move the robot in its visual forward direction
+    wheel_radius: 0.0485
+    wheel_base_half: 0.09
+    track_width_half: 0.1574
+    robot_body_frame_flip_180: true
+    invert_linear_x: false
 
 start_stop_node:
   ros__parameters:
     auto_start: true
-    start_delay: 6.0               # seconds after launch
+    start_delay: 6.0
 

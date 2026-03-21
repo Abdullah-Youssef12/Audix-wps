@@ -42,10 +42,10 @@ echo "Starting arena_experiment.launch.py (Gazebo + nodes)..."
 # directory to the resource paths used by gz/ign. This helps when models live in
 # the source tree (src/audix_pkg/models) but aren't installed to the package
 # share directory.
-export GZ_SIM_RESOURCE_PATH="${BASE_DIR}/src/audix_pkg:${GZ_SIM_RESOURCE_PATH:-}"
-export IGN_GAZEBO_RESOURCE_PATH="${BASE_DIR}/src/audix_pkg:${IGN_GAZEBO_RESOURCE_PATH:-}"
+export GZ_SIM_RESOURCE_PATH="${BASE_DIR}/src/audix_pkg/models:${BASE_DIR}/src/audix_pkg:${GZ_SIM_RESOURCE_PATH:-}"
+export IGN_GAZEBO_RESOURCE_PATH="${BASE_DIR}/src/audix_pkg/models:${BASE_DIR}/src/audix_pkg:${IGN_GAZEBO_RESOURCE_PATH:-}"
 
-ros2 launch src/audix_pkg/launch/arena_experiment.launch.py &
+ros2 launch src/audix_pkg/launch/full_mission.launch.py &
 LAUNCH_PID=$!
 
 # Ensure we clean up child processes on exit or interrupt
@@ -71,7 +71,7 @@ trap cleanup EXIT INT TERM
 sleep 8
 
 # Start a single RViz instance using the project's config
-RVIZ_CONFIG=src/audix_pkg/rviz/config.rviz
+RVIZ_CONFIG=src/audix_pkg/rviz/arena_experiment.rviz
 if [ ! -f "$RVIZ_CONFIG" ]; then
   echo "RViz config not found: $RVIZ_CONFIG"
 else

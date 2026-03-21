@@ -7,6 +7,7 @@ from launch.actions import (
     IncludeLaunchDescription,
     RegisterEventHandler,
     SetEnvironmentVariable,
+    AppendEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition
@@ -39,13 +40,13 @@ def generate_launch_description():
     use_robot_state_publisher = LaunchConfiguration('use_robot_state_publisher')
 
     # ── Environment so Gazebo can find meshes ─────────────────────────
-    gz_resource_path = SetEnvironmentVariable(
+    gz_resource_path = AppendEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
-        value=f'{pkg_share_parent}:{pkg_share}',
+        value=f'{pkg_share_parent}:{pkg_share}:{os.path.join(pkg_share, "models")}',
     )
-    ign_resource_path = SetEnvironmentVariable(
+    ign_resource_path = AppendEnvironmentVariable(
         name='IGN_GAZEBO_RESOURCE_PATH',
-        value=f'{pkg_share_parent}:{pkg_share}',
+        value=f'{pkg_share_parent}:{pkg_share}:{os.path.join(pkg_share, "models")}',
     )
     fastdds_transport = SetEnvironmentVariable(
         name='FASTDDS_BUILTIN_TRANSPORTS',

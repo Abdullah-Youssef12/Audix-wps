@@ -4,8 +4,9 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 
@@ -13,42 +14,50 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('audix')
     pkg_parent = os.path.dirname(pkg_share)
 
-    world_path = os.path.join(pkg_share, 'world', 'debug_empty.sdf')
+    models_path = os.path.join(pkg_share, 'models')
+    world_path = os.path.join(pkg_share, 'world', 'warehouse.sdf')
     ekf_config = os.path.join(pkg_share, 'config', 'ekf.yaml')
-    experiment_config = os.path.join(pkg_share, 'config', 'arena_experiment_params.yaml')
-    rviz_config = os.path.join(pkg_share, 'rviz', 'arena_experiment.rviz')
+    experiment_config = os.path.join(pkg_share, 'config', 'full_mission_params.yaml')
+    mission_config = os.path.join(pkg_share, 'config', 'mission_params.yaml')
+    rviz_config = os.path.join(pkg_share, 'rviz', 'full_mission.rviz')
 
     use_rviz = LaunchConfiguration('use_rviz')
     use_gazebo_gui = LaunchConfiguration('use_gazebo_gui')
+    use_slider_gui = LaunchConfiguration('use_slider_gui')
     use_spawn_panel = LaunchConfiguration('use_spawn_panel')
     world_name = LaunchConfiguration('world_name')
+    auto_start = LaunchConfiguration('auto_start')
+    auto_send_goal = LaunchConfiguration('auto_send_goal')
 
+    # Environment so Gazebo can find meshes
     gz_resource = SetEnvironmentVariable(
         name='GZ_SIM_RESOURCE_PATH',
-        value=f'{pkg_parent}:{pkg_share}',
+        value=f'{models_path}:{pkg_parent}:{pkg_share}',
     )
     ign_resource = SetEnvironmentVariable(
         name='IGN_GAZEBO_RESOURCE_PATH',
-        value=f'{pkg_parent}:{pkg_share}',
+        value=f'{models_path}:{pkg_parent}:{pkg_share}',
     )
 
+    # Include base scissor gazebo stack
     base_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             os.path.join(pkg_share, 'launch', 'scissor_gazebo.launch.py')
         ]),
         launch_arguments={
             'use_rviz': 'false',
-                'use_gazebo_gui': 'true',
+            'use_gazebo_gui': 'true',
             'use_slider_gui': 'false',
             'world_file': world_path,
             'world_name': world_name,
-            'spawn_x': '-3.6',
-            'spawn_y': '0.0',
+            'spawn_x': '0.0',
+            'spawn_y': '-3.9',
             'spawn_z': '0.06',
-            'spawn_yaw': '3.141592653589793',
+            'spawn_yaw': '-1.570796',
         }.items(),
     )
 
+    # Bridges
     bridge = Node(
         package='ros_gz_bridge',
         executable='parameter_bridge',
@@ -65,14 +74,7 @@ def generate_launch_description():
         ],
     )
 
-    mecanum_kinematics = Node(
-        package='audix',
-        executable='mecanum_kinematics.py',
-        name='mecanum_kinematics',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
-
+    # EKF
     ekf = Node(
         package='robot_localization',
         executable='ekf_node',
@@ -81,12 +83,13 @@ def generate_launch_description():
         parameters=[ekf_config, {'use_sim_time': True}],
     )
 
+    # Arena nodes
     roamer = Node(
         package='audix',
         executable='arena_roamer.py',
         name='arena_roamer',
         output='screen',
-        parameters=[experiment_config, {'use_sim_time': True}],
+        parameters=[experiment_config, {'use_sim_time': True, 'control_mode': 'stopped'}],
     )
 
     obstacle_manager = Node(
@@ -106,24 +109,74 @@ def generate_launch_description():
         condition=IfCondition(use_spawn_panel),
     )
 
+    # Mission nodes
+    mission = Node(
+        package='audix',
+        executable='mission_controller.py',
+        name='mission_controller',
+        output='screen',
+        parameters=[mission_config, {'use_sim_time': True}],
+    )
 
+    start_stop = Node(
+        package='audix',
+        executable='start_stop_node.py',
+        name='start_stop_node',
+        output='screen',
+        parameters=[mission_config, {'use_sim_time': True, 'auto_start': LaunchConfiguration('auto_start')}],
+    )
+
+    goal_sender = TimerAction(
+        period=8.0,
+        actions=[Node(
+            package='audix',
+            executable='goal_sender_node.py',
+            name='goal_sender_node',
+            output='screen',
+            parameters=[{'use_sim_time': True}],
+            condition=IfCondition(auto_send_goal),
+        )],
+    )
+
+    mecanum_kinematics = Node(
+        package='audix',
+        executable='mecanum_kinematics.py',
+        name='mecanum_kinematics',
+        output='screen',
+        parameters=[{'use_sim_time': True}],
+    )
+
+    # TF alias
     arena_alias_tf = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         name='arena_alias_publisher',
         arguments=['0', '0', '0', '0', '0', '0', 'arena', 'arena10'],
         parameters=[{'use_sim_time': True}],
+        output='screen',
     )
 
-    # RViz start is handled externally by scripts/clean_launch_arena.sh; leave the
-    # `use_rviz` argument declared so callers can still pass it, but do not
-    # launch RViz from this launch file to avoid duplicate windows.
+    # RViz
+    rviz_node = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', rviz_config],
+        parameters=[{'use_sim_time': True}],
+        condition=IfCondition(use_rviz),
+    )
+
+    start_spawn_panel = TimerAction(period=2.0, actions=[spawn_panel])
 
     return LaunchDescription([
-        DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2 with click-to-spawn tooling'),
+        DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2'),
         DeclareLaunchArgument('use_gazebo_gui', default_value='true', description='Launch Gazebo GUI client'),
+        DeclareLaunchArgument('use_slider_gui', default_value='false', description='Launch scissor slider GUI'),
         DeclareLaunchArgument('use_spawn_panel', default_value='true', description='Launch the obstacle spawn preset panel'),
-        DeclareLaunchArgument('world_name', default_value='debug_empty', description='Gazebo world name for the arena sandbox'),
+        DeclareLaunchArgument('world_name', default_value='warehouse', description='Gazebo world name for the arena sandbox'),
+        DeclareLaunchArgument('auto_start', default_value='true', description='Publish /robot_enable automatically'),
+        DeclareLaunchArgument('auto_send_goal', default_value='true', description='Call /send_mission automatically'),
         gz_resource,
         ign_resource,
         base_sim,
@@ -132,5 +185,10 @@ def generate_launch_description():
         arena_alias_tf,
         roamer,
         obstacle_manager,
-        TimerAction(period=2.0, actions=[spawn_panel]),
+        start_spawn_panel,
+        mission,
+        start_stop,
+        goal_sender,
+        mecanum_kinematics,
+        rviz_node,
     ])

@@ -30,7 +30,7 @@ arena_roamer:
     obstacle_side_min: 0.20
     robot_center_offset_x: 0.0
     robot_center_offset_y: 0.0
-    debug_frame_id: arena10
+    debug_frame_id: odom
     ir_filter_alpha_rise: 0.10
     ir_filter_alpha_fall: 0.58
     path_point_spacing: 0.05
@@ -65,7 +65,7 @@ arena_roamer:
     cmd_deadband_linear: 0.020
     cmd_deadband_lateral: 0.020
     cmd_deadband_angular: 0.050
-    control_mode: acceptance_path
+    control_mode: stopped
     route_name: double_pinch_figure8
     route_loop: false
     route_waypoint_tolerance: 0.24
@@ -85,7 +85,7 @@ arena_roamer:
 
 arena_obstacle_manager:
   ros__parameters:
-    world_name: arena10
+    world_name: warehouse
     click_topic: /clicked_point
     preset_topic: /arena_spawn_preset
     command_topic: /arena_spawn_command

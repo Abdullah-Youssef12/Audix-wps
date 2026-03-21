@@ -63,7 +63,7 @@ def generate_launch_description():
         executable='parameter_bridge',
         output='screen',
         arguments=[
-            '/cmd_vel@geometry_msgs/msg/Twist[gz.msgs.Twist',
+            
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
             '/ir_front/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
             '/ir_front_left/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan',
@@ -84,13 +84,6 @@ def generate_launch_description():
     )
 
     # Arena nodes
-    roamer = Node(
-        package='audix',
-        executable='arena_roamer.py',
-        name='arena_roamer',
-        output='screen',
-        parameters=[experiment_config, {'use_sim_time': True, 'control_mode': 'stopped'}],
-    )
 
     obstacle_manager = Node(
         package='audix',
@@ -138,14 +131,6 @@ def generate_launch_description():
         )],
     )
 
-    mecanum_kinematics = Node(
-        package='audix',
-        executable='mecanum_kinematics.py',
-        name='mecanum_kinematics',
-        output='screen',
-        parameters=[{'use_sim_time': True}],
-    )
-
     # TF alias
     arena_alias_tf = Node(
         package='tf2_ros',
@@ -182,13 +167,11 @@ def generate_launch_description():
         base_sim,
         bridge,
         ekf,
-        arena_alias_tf,
-        roamer,
         obstacle_manager,
         start_spawn_panel,
         mission,
         start_stop,
         goal_sender,
-        mecanum_kinematics,
+        arena_alias_tf,
         rviz_node,
     ])

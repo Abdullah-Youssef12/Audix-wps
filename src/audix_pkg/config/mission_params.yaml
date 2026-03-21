@@ -1,5 +1,6 @@
-yamlmission_controller:
+mission_controller:
   ros__parameters:
+    debug_frame_id: base_link
     waypoints: [0.0, -2.4, 0.0, 0.25, 0.0, 0.0, 3.14159, 0.25, 0.0, 2.4, 0.0, 0.25]
     obstacle_speed_full: 0.30
     obstacle_speed_slow: 0.18

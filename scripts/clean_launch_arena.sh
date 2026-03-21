@@ -71,7 +71,7 @@ trap cleanup EXIT INT TERM
 sleep 8
 
 # Start a single RViz instance using the project's config
-RVIZ_CONFIG=src/audix_pkg/rviz/arena_experiment.rviz
+RVIZ_CONFIG=src/audix_pkg/rviz/full_mission.rviz
 if [ ! -f "$RVIZ_CONFIG" ]; then
   echo "RViz config not found: $RVIZ_CONFIG"
 else

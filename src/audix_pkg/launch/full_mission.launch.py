@@ -27,7 +27,6 @@ def generate_launch_description():
     use_spawn_panel = LaunchConfiguration('use_spawn_panel')
     world_name = LaunchConfiguration('world_name')
     auto_start = LaunchConfiguration('auto_start')
-    auto_send_goal = LaunchConfiguration('auto_send_goal')
 
     # Environment so Gazebo can find meshes
     gz_resource = SetEnvironmentVariable(
@@ -102,34 +101,16 @@ def generate_launch_description():
         condition=IfCondition(use_spawn_panel),
     )
 
-    # Mission nodes
-    mission = Node(
+    # Arena roamer node (use ArenaRoamer for warehouse navigation + lift)
+    roamer = Node(
         package='audix',
-        executable='mission_controller.py',
-        name='mission_controller',
+        executable='arena_roamer.py',
+        name='arena_roamer',
         output='screen',
         parameters=[mission_config, {'use_sim_time': True}],
     )
 
-    start_stop = Node(
-        package='audix',
-        executable='start_stop_node.py',
-        name='start_stop_node',
-        output='screen',
-        parameters=[mission_config, {'use_sim_time': True, 'auto_start': LaunchConfiguration('auto_start')}],
-    )
-
-    goal_sender = TimerAction(
-        period=8.0,
-        actions=[Node(
-            package='audix',
-            executable='goal_sender_node.py',
-            name='goal_sender_node',
-            output='screen',
-            parameters=[{'use_sim_time': True}],
-            condition=IfCondition(auto_send_goal),
-        )],
-    )
+    # start_stop and goal_sender removed: ArenaRoamer does not use /robot_enable or /send_mission
 
     # TF alias
     arena_alias_tf = Node(
@@ -161,7 +142,6 @@ def generate_launch_description():
         DeclareLaunchArgument('use_spawn_panel', default_value='true', description='Launch the obstacle spawn preset panel'),
         DeclareLaunchArgument('world_name', default_value='warehouse', description='Gazebo world name for the arena sandbox'),
         DeclareLaunchArgument('auto_start', default_value='true', description='Publish /robot_enable automatically'),
-        DeclareLaunchArgument('auto_send_goal', default_value='true', description='Call /send_mission automatically'),
         gz_resource,
         ign_resource,
         base_sim,
@@ -169,9 +149,7 @@ def generate_launch_description():
         ekf,
         obstacle_manager,
         start_spawn_panel,
-        mission,
-        start_stop,
-        goal_sender,
+        roamer,
         arena_alias_tf,
         rviz_node,
     ])

@@ -6,9 +6,10 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
+        - /Grid1
         - /RobotModel1
-        - /RobotModel1/Status1
         - /TF1
+        - /TF1/Status1
         - /PlannedPath1
         - /RobotPath1
         - /WaypointMarkers1
@@ -31,7 +32,7 @@ Visualization Manager:
   Class: ""
   Displays:
     - Alpha: 0.2800000011920929
-      Cell Size: 1
+      Cell Size: 0.07999999821186066
       Class: rviz_default_plugins/Grid
       Color: 160; 160; 164
       Enabled: true
@@ -45,7 +46,7 @@ Visualization Manager:
         Y: 0
         Z: 0
       Plane: XY
-      Plane Cell Count: 10
+      Plane Cell Count: 110
       Reference Frame: <Fixed Frame>
       Value: true
     - Alpha: 0.6000000238418579
@@ -226,13 +227,23 @@ Visualization Manager:
           Value: true
         arena10:
           Value: true
+        back_left_wheel_link:
+          Value: true
+        back_right_wheel_link:
+          Value: true
         base_footprint:
           Value: true
         base_link:
           Value: true
+        bottom_stud_link:
+          Value: true
         camera_link:
           Value: true
         camera_optical_link:
+          Value: true
+        front_left_wheel_link:
+          Value: true
+        front_right_wheel_link:
           Value: true
         imu_link:
           Value: true
@@ -248,9 +259,35 @@ Visualization Manager:
           Value: true
         ir_right_link:
           Value: true
+        left_link1:
+          Value: true
+        left_link2:
+          Value: true
+        left_link3:
+          Value: true
+        left_link4:
+          Value: true
+        left_link5:
+          Value: true
+        left_link6:
+          Value: true
         odom:
           Value: true
+        right_link1:
+          Value: true
+        right_link2:
+          Value: true
+        right_link3:
+          Value: true
+        right_link4:
+          Value: true
+        right_link5:
+          Value: true
+        right_link6:
+          Value: true
         scissors_lift_base:
+          Value: true
+        top_stud_link:
           Value: true
         warehouse:
           Value: true
@@ -260,27 +297,55 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        warehouse:
-          odom:
-            base_footprint:
+        odom:
+          base_footprint:
+            {}
+          base_link:
+            back_left_wheel_link:
               {}
-            base_link:
-              imu_link:
-                {}
-              ir_back_link:
-                {}
-              ir_front_left_link:
-                {}
-              ir_front_link:
-                {}
-              ir_front_right_link:
-                {}
-              ir_left_link:
-                {}
-              ir_right_link:
-                {}
-              scissors_lift_base:
-                {}
+            back_right_wheel_link:
+              {}
+            front_left_wheel_link:
+              {}
+            front_right_wheel_link:
+              {}
+            imu_link:
+              {}
+            ir_back_link:
+              {}
+            ir_front_left_link:
+              {}
+            ir_front_link:
+              {}
+            ir_front_right_link:
+              {}
+            ir_left_link:
+              {}
+            ir_right_link:
+              {}
+            scissors_lift_base:
+              bottom_stud_link:
+                left_link1:
+                  left_link4:
+                    left_link5:
+                      camera_link:
+                        camera_optical_link:
+                          {}
+                right_link1:
+                  right_link4:
+                    right_link5:
+                      {}
+              left_link2:
+                left_link3:
+                  left_link6:
+                    top_stud_link:
+                      {}
+              right_link2:
+                right_link3:
+                  right_link6:
+                    {}
+        warehouse:
+          {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -397,7 +462,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 12
+      Distance: 16.425615310668945
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -412,10 +477,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.949999988079071
+      Pitch: 0.9900000095367432
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 0.8450000286102295
+      Yaw: 1.6349999904632568
     Saved: ~
 Window Geometry:
   Displays:

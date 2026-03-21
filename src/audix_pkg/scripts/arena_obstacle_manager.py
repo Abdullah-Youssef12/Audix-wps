@@ -337,7 +337,7 @@ class ArenaObstacleManager(Node):
         markers = []
 
         clear = Marker()
-        clear.header.frame_id = 'arena10'
+        clear.header.frame_id = 'odom'
         clear.header.stamp = now
         clear.action = Marker.DELETEALL
         markers.append(clear)
@@ -346,7 +346,7 @@ class ArenaObstacleManager(Node):
             sx, sy, sz = obstacle['size']
 
             marker = Marker()
-            marker.header.frame_id = 'arena10'
+            marker.header.frame_id = 'odom'
             marker.header.stamp = now
             marker.ns = 'arena_obstacles'
             marker.id = index
@@ -372,7 +372,7 @@ class ArenaObstacleManager(Node):
             markers.append(marker)
 
             label = Marker()
-            label.header.frame_id = 'arena10'
+            label.header.frame_id = 'odom'
             label.header.stamp = now
             label.ns = 'arena_obstacle_labels'
             label.id = 1000 + index

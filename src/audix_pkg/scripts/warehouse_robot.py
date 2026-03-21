@@ -13,6 +13,7 @@ import importlib.machinery
 import importlib.util
 import os
 import sys
+from ament_index_python.packages import get_package_prefix
 
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
@@ -34,14 +35,10 @@ def _load_module(module_name, path):
 def main():
     rclpy.init()
 
-    # Resolve script paths relative to workspace root. Adjust if needed.
-    ws = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    arena_path = os.path.join(ws, 'src', 'audix_pkg', 'scripts', 'arena_roamer.py')
-    mission_path = os.path.join(ws, 'src', 'audix_pkg', 'scripts', 'mission_controller.py')
-
-    if not os.path.exists(arena_path) or not os.path.exists(mission_path):
-        print('ERROR: expected scripts not found:', arena_path, mission_path)
-        return 1
+    # Resolve installed package script locations (works both in-source and after colcon install)
+    pkg_lib = os.path.join(get_package_prefix('audix'), 'lib', 'audix')
+    arena_path = os.path.join(pkg_lib, 'arena_roamer.py')
+    mission_path = os.path.join(pkg_lib, 'mission_controller.py')
 
     arena_mod = _load_module('arena_roamer_mod', arena_path)
     mission_mod = _load_module('mission_controller_mod', mission_path)
@@ -59,49 +56,52 @@ def main():
 
     # Instantiate both nodes (they create their own timers/subscriptions)
     roamer = ArenaRoamer()
+    # Ensure RViz debug markers use the odom fixed frame in the warehouse environment
+    # (ArenaRoamer defaults to 'arena10' which is not connected to 'odom' in this world).
+    roamer.debug_frame_id = 'odom'
     mission = MissionController()
 
-    # Replace their publishers with the arbiter's publishers so we have a
-    # single ROS writer for each debug topic and /cmd_vel.
-    try:
-        roamer.cmd_pub = cmd_pub
-        roamer.path_pub = planned_path_pub
-        roamer.trail_pub = robot_trail_pub
-        roamer.marker_pub = marker_pub
-        roamer.state_pub = state_pub
-    except Exception:
-        pass
+    # Attach arbiter publishers directly (attribute names are verified)
+    # Roamer publishers (verified attribute names from arena_roamer.py)
+    roamer.cmd_pub    = cmd_pub
+    roamer.path_pub   = planned_path_pub
+    roamer.trail_pub  = robot_trail_pub
+    roamer.marker_pub = marker_pub
+    roamer.state_pub  = state_pub
 
-    try:
-        mission.cmd_pub = cmd_pub
-        mission.planned_path_pub = planned_path_pub
-        mission.robot_trail_pub = robot_trail_pub
-        mission.marker_pub = marker_pub
-        mission.state_pub = state_pub
-        mission.lift_pub = mission.lift_pub if hasattr(mission, 'lift_pub') else None
-    except Exception:
-        pass
+    # Mission publishers (verified attribute names from mission_controller.py)
+    # Do NOT touch mission.lift_pub — it is internal to MissionController
+    mission.cmd_pub          = cmd_pub
+    mission.planned_path_pub = planned_path_pub
+    mission.robot_trail_pub  = robot_trail_pub
+    mission.marker_pub       = marker_pub
+    mission.state_pub        = state_pub
 
     # Monkeypatch roamer._publish_cmd so it yields to mission when mission is active.
     if hasattr(roamer, '_publish_cmd') and hasattr(mission, 'mission_loaded'):
         roamer._publish_cmd_original = roamer._publish_cmd
 
         def _roamer_publish_cmd_guard(vx=0.0, vy=0.0, wz=0.0):
-            # If mission is loaded and enabled, mission takes priority.
-            if getattr(mission, 'mission_loaded', False) and getattr(mission, 'enabled', False):
+            # If mission is loaded, suppress roamer immediately so mission owns motion.
+            if getattr(mission, 'mission_loaded', False):
                 return
             return roamer._publish_cmd_original(vx, vy, wz)
 
         roamer._publish_cmd = _roamer_publish_cmd_guard
 
-    # Ensure mission uses arbiter publisher (mission usually has higher-level control)
-    if hasattr(mission, '_publish_cmd'):
-        mission._publish_cmd_original = mission._publish_cmd
+        # Guard the roamer's debug publisher so it doesn't overwrite
+        # the mission controller's path/markers in RViz when mission is running.
+        roamer._publish_debug_original = roamer._publish_debug
 
-        def _mission_publish_cmd_proxy(vx=0.0, vy=0.0, wz=0.0):
-            return mission._publish_cmd_original(vx, vy, wz)
+        def _roamer_debug_guard():
+            # Suppress roamer debug publishing as soon as a mission is loaded.
+            if getattr(mission, 'mission_loaded', False):
+                return
+            return roamer._publish_debug_original()
 
-        mission._publish_cmd = _mission_publish_cmd_proxy
+        roamer._publish_debug = _roamer_debug_guard
+
+    # Mission uses its own _publish_cmd implementation; no passthrough proxy required.
 
     # Spin both nodes using a MultiThreadedExecutor so each node's timers/callbacks run concurrently.
     executor = MultiThreadedExecutor()

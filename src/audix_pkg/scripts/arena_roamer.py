@@ -8,7 +8,7 @@ from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -118,6 +118,10 @@ class ArenaRoamer(Node):
         # avoidance override parameters
         self.declare_parameter('avoid_override_enable', True)
         self.declare_parameter('avoid_override_timeout_sec', 0.8)
+        self.declare_parameter('waypoints', [0.0])
+        self.declare_parameter('lift_dwell_time', 2.0)
+        self.declare_parameter('scan_turn_degrees', 90.0)
+        self.declare_parameter('scan_directions', 'right,left,right')
 
         self.arena_min_x = float(self.get_parameter('arena_min_x').value)
         self.arena_max_x = float(self.get_parameter('arena_max_x').value)
@@ -178,6 +182,10 @@ class ArenaRoamer(Node):
         self.stuck_distance_epsilon = float(self.get_parameter('stuck_distance_epsilon').value)
         self.cmd_forward_sign = float(self.get_parameter('cmd_forward_sign').value)
         self.cmd_lateral_sign = float(self.get_parameter('cmd_lateral_sign').value)
+        # Scan parameters
+        self.scan_turn_rad = math.radians(float(self.get_parameter('scan_turn_degrees').value))
+        scan_dir_str = str(self.get_parameter('scan_directions').value)
+        self.route_scan_directions = [s.strip().lower() for s in scan_dir_str.split(',')]
         self.goal_keepout_radius = float(self.get_parameter('goal_keepout_radius').value)
         self.ir_low_sample_count = max(1, int(self.get_parameter('ir_low_sample_count').value))
         self.cmd_linear_accel_limit = float(self.get_parameter('cmd_linear_accel_limit').value)
@@ -287,7 +295,39 @@ class ArenaRoamer(Node):
         self.last_cmd_vy = 0.0
         self.last_cmd_wz = 0.0
         self.current_planar_speed = 0.0
-        self.route_waypoints = self._build_route_waypoints(self.route_name) if self.control_mode == 'acceptance_path' else []
+        # Lift setup and waypoint parsing
+        self.lift_dwell_time = float(self.get_parameter('lift_dwell_time').value)
+        self.lift_pub = self.create_publisher(Float64, '/scissor_lift/slider', 10)
+
+        wp_flat = self.get_parameter('waypoints').value
+        parsed_waypoints = []
+        parsed_lift_heights = []
+
+        if wp_flat and len(wp_flat) >= 4 and not (len(wp_flat) == 1 and wp_flat[0] == 0.0):
+            if isinstance(wp_flat[0], (list, tuple)):
+                for wp in wp_flat:
+                    parsed_waypoints.append((float(wp[0]), float(wp[1])))
+                    parsed_lift_heights.append(float(wp[3]) if len(wp) > 3 else 0.0)
+            else:
+                for i in range(0, len(wp_flat), 4):
+                    parsed_waypoints.append((float(wp_flat[i]), float(wp_flat[i+1])))
+                    parsed_lift_heights.append(float(wp_flat[i+3]) if i+3 < len(wp_flat) else 0.0)
+
+        if parsed_waypoints:
+            self.route_waypoints = parsed_waypoints
+            self.route_lift_heights = parsed_lift_heights
+            self.control_mode = 'acceptance_path'
+            self.route_loop = False
+        else:
+            self.route_waypoints = self._build_route_waypoints(self.route_name) if self.control_mode == 'acceptance_path' else []
+            self.route_lift_heights = [0.0] * len(self.route_waypoints)
+
+        self.lift_active_until_sec = 0.0
+        self.lift_triggered_for_waypoint = -1
+        self.waypoint_scan_state = 'idle'  # idle → rotating_to_scan → scanning → rotating_back → done
+        self.waypoint_scan_target_yaw = 0.0   # body yaw to face during scan
+        self.waypoint_scan_resume_yaw = 0.0   # body yaw to return to after scan
+        self.waypoint_scan_start_sec = 0.0
         self.route_waypoint_index = 0
         self.route_goal_hold_until_sec = 0.0
         self.route_complete = False
@@ -367,6 +407,24 @@ class ArenaRoamer(Node):
         self.blocked_side = None
         self.blocked_side_clear_count = 0
         self.avoid_memory = None
+
+    def _trigger_lift_for_waypoint(self, waypoint_index):
+        if waypoint_index >= len(self.route_lift_heights):
+            return
+        if self.lift_triggered_for_waypoint == waypoint_index:
+            return
+        height = self.route_lift_heights[waypoint_index]
+        msg = Float64()
+        msg.data = max(0.0, min(1.0, height))
+        self.lift_pub.publish(msg)
+        self.lift_active_until_sec = self._now_sec() + self.lift_dwell_time
+        self.lift_triggered_for_waypoint = waypoint_index
+        self.get_logger().info(f'Lift triggered for waypoint {waypoint_index}: slider={height:.2f}')
+
+    def _scan_direction_for_index(self, index):
+        if index < len(self.route_scan_directions):
+            return self.route_scan_directions[index]
+        return 'right'
 
     def _blocked_side_from_sensor(self, sensor_name):
         if sensor_name in ('left', 'front_left'):
@@ -664,6 +722,10 @@ class ArenaRoamer(Node):
         ))
 
     def _advance_route_waypoint(self, reason):
+        # Lower lift before moving to next waypoint
+        msg = Float64()
+        msg.data = 0.0
+        self.lift_pub.publish(msg)
         next_index = self.route_waypoint_index + 1
         if next_index < len(self.route_waypoints):
             self._activate_route_waypoint(next_index, reason)
@@ -1614,6 +1676,8 @@ class ArenaRoamer(Node):
                     self._reset_motion_selection()
                     self._reset_blocked_side()
                     self._publish_cmd(0.0, 0.0, 0.0)
+                    # Trigger lift on first settle tick for this waypoint
+                    self._trigger_lift_for_waypoint(self.route_waypoint_index)
                     return
                 self._advance_route_waypoint('Waypoint reached.')
                 if self.route_complete:

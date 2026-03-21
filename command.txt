@@ -1,4 +1,0 @@
-cd /home/hiddenlegend07/Audix_ws
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 launch audix midterm.launch.py use_rviz:=true use_slider_gui:=false run_navigation:=true run_cardinal_test:=false auto_start:=true auto_send_goal:=true

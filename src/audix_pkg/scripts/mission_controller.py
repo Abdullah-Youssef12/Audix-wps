@@ -138,6 +138,8 @@ class MissionController(Node):
         self.declare_parameter('cmd_lateral_decel_limit', 2.2)
         self.declare_parameter('cmd_angular_accel_limit', 2.8)
         self.declare_parameter('cmd_angular_decel_limit', 4.5)
+        self.declare_parameter('cmd_forward_sign', -1.0)
+        self.declare_parameter('cmd_lateral_sign', 1.0)
 
         # Load parameters
         self.obstacle_speed_full = float(self.get_parameter('obstacle_speed_full').value)
@@ -215,6 +217,8 @@ class MissionController(Node):
         self.cmd_lateral_decel_limit = float(self.get_parameter('cmd_lateral_decel_limit').value)
         self.cmd_angular_accel_limit = float(self.get_parameter('cmd_angular_accel_limit').value)
         self.cmd_angular_decel_limit = float(self.get_parameter('cmd_angular_decel_limit').value)
+        self.cmd_forward_sign = float(self.get_parameter('cmd_forward_sign').value)
+        self.cmd_lateral_sign = float(self.get_parameter('cmd_lateral_sign').value)
 
         # Parse waypoints from YAML: flat list [x,y,yaw,h, x,y,yaw,h, ...]
         wp_flat = self.get_parameter('waypoints').value
@@ -790,8 +794,8 @@ class MissionController(Node):
             )
 
         cmd = Twist()
-        cmd.linear.x = cmd_vx
-        cmd.linear.y = cmd_vy
+        cmd.linear.x = self.cmd_forward_sign * cmd_vx
+        cmd.linear.y = self.cmd_lateral_sign * cmd_vy
         cmd.angular.z = cmd_wz
         self.cmd_pub.publish(cmd)
         self.last_cmd_vx = cmd_vx
@@ -865,11 +869,41 @@ class MissionController(Node):
     def _front_sensor_names(self):
         return ['front', 'front_left', 'front_right']
 
+    def _side_sensor_names(self, side):
+        if side == 'left':
+            return ['front_left', 'left']
+        if side == 'right':
+            return ['front_right', 'right']
+        return []
+
     def _clear_obstacle_memory(self):
         self.obstacle_memory_trigger_sensor = None
         self.obstacle_memory_blocked_side = None
         self.obstacle_memory_bypass_side = None
         self.obstacle_memory_clear_count = 0
+
+    def _latch_obstacle_memory(self, trigger_sensor, bypass_side=None):
+        """Latch an obstacle trigger into memory with an optional bypass side.
+
+        Args:
+            trigger_sensor: sensor name that triggered the obstacle ('front', 'front_left', etc.)
+            bypass_side: optional 'left' or 'right' to prefer a bypass lane
+        """
+        self.obstacle_memory_trigger_sensor = trigger_sensor
+        if bypass_side in ('left', 'right'):
+            self.obstacle_memory_bypass_side = bypass_side
+            self.obstacle_memory_blocked_side = 'right' if bypass_side == 'left' else 'left'
+
+    def _update_obstacle_memory(self):
+        """Update obstacle memory clear counters and clear memory when sustained clear."""
+        if self.obstacle_memory_trigger_sensor is None:
+            return
+        if self._all_ir_clear():
+            self.obstacle_memory_clear_count += 1
+        else:
+            self.obstacle_memory_clear_count = 0
+        if self.obstacle_memory_clear_count >= self.obstacle_memory_clear_cycles:
+            self._clear_obstacle_memory()
 
     def _choose_trigger_sensor(self, threshold=None):
         if not self._obstacle_detection_active():
@@ -1012,7 +1046,8 @@ class MissionController(Node):
         return self._front_facing_heading_to(tx, ty)
 
     def _front_facing_heading_to(self, tx, ty):
-        return self._normalize(math.atan2(ty - self.center_y, tx - self.center_x))
+        # Add π because robot physical forward is -X in URDF frame
+        return self._normalize(math.atan2(ty - self.center_y, tx - self.center_x) + math.pi)
 
     def _make_pose(self, x, y, yaw):
         pose = PoseStamped()
@@ -2323,9 +2358,9 @@ class MissionController(Node):
         dist = math.sqrt(dx**2 + dy**2)
         angle_to_target = math.atan2(dy, dx)
         rotate_target = self.resume_heading_target if self.use_resume_heading_for_target_rotate else angle_to_target
-        angle_error = self._normalize(rotate_target - self.yaw)
-        scan_yaw_error = self._normalize(self.scan_heading_target - self.yaw)
-        resume_yaw_error = self._normalize(self.resume_heading_target - self.yaw)
+        angle_error = self._normalize(rotate_target - self._geometry_body_yaw())
+        scan_yaw_error = self._normalize(self.scan_heading_target - self._geometry_body_yaw())
+        resume_yaw_error = self._normalize(self.resume_heading_target - self._geometry_body_yaw())
 
         # ---- Check obstacles during movement states ----
         obstacle_sensitive_states = (

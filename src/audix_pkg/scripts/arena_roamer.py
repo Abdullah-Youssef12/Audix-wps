@@ -251,11 +251,11 @@ class ArenaRoamer(Node):
 
         self.sensor_positions = {
             'back': (0.16255, -0.00323),
-            'right': (0.00273, 0.15504),
-            'front_right': (-0.17753, 0.12688),
+            'left': (0.00273, 0.15504),
+            'front_left': (-0.17753, 0.12688),
             'front': (-0.20195, 0.00482),
-            'front_left': (-0.18323, -0.11962),
-            'left': (-0.00537, -0.15346),
+            'front_right': (-0.18323, -0.11962),
+            'right': (-0.00537, -0.15346),
         }
 
         self.x = 0.0
@@ -740,10 +740,10 @@ class ArenaRoamer(Node):
     def _sensor_direction_body(self, sensor_name):
         directions = {
             'front': (1.0, 0.0),
-            'front_left': (1.0, 1.0),
-            'front_right': (1.0, -1.0),
-            'left': (0.0, 1.0),
-            'right': (0.0, -1.0),
+            'front_left': (1.0, -1.0),
+            'front_right': (1.0, 1.0),
+            'left': (0.0, -1.0),
+            'right': (0.0, 1.0),
             'back': (-1.0, 0.0),
         }
         dir_x, dir_y = directions[sensor_name]

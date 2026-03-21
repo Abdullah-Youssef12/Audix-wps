@@ -316,16 +316,16 @@ class MissionController(Node):
         # Note: left/right and front_left/front_right placement below
         # are ordered so RViz markers align visually with URDF sensors.
         self.sensor_positions = {
-            'back': (0.00389, -0.15402),
-            'left': (-0.16403, -0.30425),
-            'front_left': (-0.34189, -0.27041),
-            'front': (-0.36061, -0.14597),
-            'front_right': (-0.33619, -0.02391),
-            'right': (-0.15593, 0.00425),
+            'back':        ( 0.16255, -0.00323),
+            'right':       ( 0.00273,  0.15504),
+            'front_right': (-0.17753,  0.12688),
+            'front':       (-0.20195,  0.00482),
+            'front_left':  (-0.18323, -0.11962),
+            'left':        (-0.00537, -0.15346),
         }
         self.ir_half_fov = 0.30543
         self.ir_default_range_min = 0.05
-        self.ir_default_range_max = 0.15
+        self.ir_default_range_max = 0.25
         self.front_extent = abs(self.sensor_positions['front'][0] - self.robot_center_offset_x)
         self.back_extent = abs(self.sensor_positions['back'][0] - self.robot_center_offset_x)
         self.left_extent = abs(self.sensor_positions['left'][1] - self.robot_center_offset_y)
@@ -2320,9 +2320,9 @@ class MissionController(Node):
                     self.scan_waypoint_indices = set(range(len(self.waypoints)))
                     self.current_wp_idx = 0
                     if self.waypoints:
-                            self.path_line_start = (self.center_x, self.center_y)
-                            self.path_line_end = self.waypoints[0][:2]
-                            self.state = State.ROTATE_TO_TARGET
+                        self.path_line_start = (self.center_x, self.center_y)
+                        self.path_line_end = self.waypoints[0][:2]
+                        self.state = State.ROTATE_TO_TARGET
                         self.get_logger().info('Mission started! Heading to waypoint 0')
             return
 

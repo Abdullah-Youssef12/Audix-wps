@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction, LogInfo
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -106,11 +106,6 @@ def generate_launch_description():
         condition=IfCondition(use_spawn_panel),
     )
 
-    rviz = ExecuteProcess(
-        cmd=['rviz2', '-d', rviz_config],
-        output='screen',
-        additional_env={'LIBGL_ALWAYS_SOFTWARE': '1'},
-    )
 
     arena_alias_tf = Node(
         package='tf2_ros',
@@ -120,7 +115,9 @@ def generate_launch_description():
         parameters=[{'use_sim_time': True}],
     )
 
-    both_guis = PythonExpression(["'", use_rviz, "' == 'true' and '", use_gazebo_gui, "' == 'true'"])
+    # RViz start is handled externally by scripts/clean_launch_arena.sh; leave the
+    # `use_rviz` argument declared so callers can still pass it, but do not
+    # launch RViz from this launch file to avoid duplicate windows.
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true', description='Launch RViz2 with click-to-spawn tooling'),
@@ -136,7 +133,4 @@ def generate_launch_description():
         roamer,
         obstacle_manager,
         TimerAction(period=2.0, actions=[spawn_panel]),
-        # Delay RViz start to allow Gazebo to publish /clock and sensors
-        TimerAction(period=8.0, actions=[rviz]),
-        LogInfo(msg='[arena_experiment.launch.py] ERROR: Both Gazebo GUI and RViz must be enabled for simulation to start.', condition=IfCondition(PythonExpression(["not ('", use_rviz, "' == 'true') or not ('", use_gazebo_gui, "' == 'true')"])))
     ])

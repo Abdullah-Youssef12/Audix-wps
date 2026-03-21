@@ -17,7 +17,7 @@
     name="base_link">
     <inertial>
       <origin
-        xyz="-0.16542560919261 -0.149974396919816 0.0555112241124055"
+        xyz="-0.00676560919261 0.000825603080184 0.0555112241124055"
         rpy="0 0 0" />
       <mass
         value="2.23789814285683" />
@@ -31,7 +31,7 @@
     </inertial>
     <visual>
       <origin
-        xyz="0 0 0"
+        xyz="0.15866 0.15079 0"
         rpy="0 0 0" />
       <geometry>
         <mesh
@@ -43,15 +43,7 @@
           rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
       </material>
     </visual>
-    <collision>
-      <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
-      <geometry>
-        <mesh
-          filename="package://audix/meshes/base_link.STL" />
-      </geometry>
-    </collision>
+    
   </link>
   <link
     name="front_left_wheel_link">
@@ -1496,7 +1488,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>
@@ -1532,7 +1524,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>
@@ -1568,7 +1560,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>
@@ -1604,7 +1596,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>
@@ -1640,7 +1632,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>
@@ -1676,7 +1668,7 @@
           </vertical>
         </scan>
         <range>
-          <min>0.05</min>
+          <min>0.10</min>
           <max>0.25</max>
           <resolution>0.01</resolution>
         </range>

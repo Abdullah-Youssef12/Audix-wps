@@ -817,17 +817,8 @@ class MissionController(Node):
         self.last_cmd_time = now
 
     def _center_xy(self, base_x, base_y, yaw):
-        center_x = (
-            base_x
-            + math.cos(yaw) * self.robot_center_offset_x
-            - math.sin(yaw) * self.robot_center_offset_y
-        )
-        center_y = (
-            base_y
-            + math.sin(yaw) * self.robot_center_offset_x
-            + math.cos(yaw) * self.robot_center_offset_y
-        )
-        return center_x, center_y
+        # robot_center_offset is moved to zeroed YAML; center is the base origin
+        return base_x, base_y
 
     def _compute_vector_repulsion(self):
         """

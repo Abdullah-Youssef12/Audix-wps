@@ -240,22 +240,22 @@ class ArenaRoamer(Node):
 
         self.ir = {name: float('inf') for name in self.sensor_names}
         self.ir_raw = dict(self.ir)
-        # Increase IR detection range to 20cm as requested
-        self.ir_range_max = {key: 0.20 for key in self.ir}
+        # IR detection range set to 25cm
+        self.ir_range_max = {key: 0.25 for key in self.ir}
         self.sensor_last_update_sec = {key: None for key in self.ir}
         self.ir_default_range_min = 0.05
-        self.ir_default_range_max = 0.20
+        self.ir_default_range_max = 0.25
         # For time-sequenced binary trigger handling (front sensors)
         self._last_ir_trigger = {name: 0.0 for name in ('front', 'front_left', 'front_right')}
         self.ir_half_fov = 0.30543
 
         self.sensor_positions = {
-            'back': (0.00389, -0.15402),
-            'right': (-0.15593, 0.00425),
-            'front_right': (-0.33619, -0.02391),
-            'front': (-0.36061, -0.14597),
-            'front_left': (-0.34189, -0.27041),
-            'left': (-0.16403, -0.30425),
+            'back': (0.16255, -0.00323),
+            'right': (0.00273, 0.15504),
+            'front_right': (-0.17753, 0.12688),
+            'front': (-0.20195, 0.00482),
+            'front_left': (-0.18323, -0.11962),
+            'left': (-0.00537, -0.15346),
         }
 
         self.x = 0.0
@@ -308,6 +308,10 @@ class ArenaRoamer(Node):
         self.last_obstacle_world = None
         self.last_obstacle_time = 0.0
         self.just_activated_waypoint = False
+        # Reroute tracking: cooldown
+        self.reroute_cooldown_until = 0.0
+        # Lightweight post-reroute probe state
+        self.probe_state = None
 
     def _avoid_cb(self, msg):
         # store the latest avoidance suggestion and timestamp
@@ -645,6 +649,12 @@ class ArenaRoamer(Node):
         # mark that we just activated a waypoint so the next rotation can
         # perform a rotate-away maneuver if an obstacle was recently seen
         self.just_activated_waypoint = True
+        # Latch shortest-path heading error to the new waypoint activation
+        try:
+            heading_to_new_goal = math.atan2(self.goal_y - self.center_y, self.goal_x - self.center_x)
+            self.waypoint_activation_heading_error = self._normalize(heading_to_new_goal - self._geometry_body_yaw())
+        except Exception:
+            self.waypoint_activation_heading_error = 0.0
         self.route_goal_hold_until_sec = 0.0
         self.get_logger().info('%s Target waypoint %d -> (%.2f, %.2f)' % (
             reason,
@@ -712,10 +722,8 @@ class ArenaRoamer(Node):
             self.robot_path = self.robot_path[-800:]
 
     def _center_xy(self, base_x, base_y, yaw):
-        return (
-            base_x + math.cos(yaw) * self.robot_center_offset_x - math.sin(yaw) * self.robot_center_offset_y,
-            base_y + math.sin(yaw) * self.robot_center_offset_x + math.cos(yaw) * self.robot_center_offset_y,
-        )
+        # robot_center_offset is moved to zeroed YAML; center is the base origin
+        return base_x, base_y
 
     def _geometry_body_yaw(self):
         if self.robot_body_frame_flip_180:
@@ -1011,6 +1019,14 @@ class ArenaRoamer(Node):
         # Track triggers and active threats from forward-facing sensors
         active_threats = []
         time_since_trigger = float('inf')
+        # Determine whether any front sensor is currently physically blocked
+        current_front_blocked = False
+        for name in ('front', 'front_left', 'front_right'):
+            raw = self.ir_raw.get(name, float('inf'))
+            if math.isfinite(raw) and raw <= self.obstacle_detect_distance:
+                current_front_blocked = True
+                break
+
         for name in ('front', 'front_left', 'front_right'):
             dist = self._sensor_control_value(name)
             if math.isfinite(dist) and dist <= self.obstacle_detect_distance:
@@ -1021,10 +1037,19 @@ class ArenaRoamer(Node):
             else:
                 last = self._last_ir_trigger.get(name, 0.0)
                 elapsed = now - last
-                if elapsed <= self.repulse_decay_sec:
+                # Only honor phantom-tail (decayed) entries when there is at
+                # least one front sensor currently physically blocked. If all
+                # front sensors are clear right now, do not resurrect decayed
+                # entries — return zero repulsion instead.
+                if elapsed <= self.repulse_decay_sec and current_front_blocked:
                     active_threats.append(name)
                     if elapsed < time_since_trigger:
                         time_since_trigger = elapsed
+
+        # If there are no active triggers and no front sensors currently
+        # blocked, skip phantom-tail and return zero repulsion immediately.
+        if not current_front_blocked and not active_threats:
+            return 0.0, 0.0, None, float('inf')
 
         if active_threats:
             # Phase 1: initial backing phase (0.0 - 0.4s)
@@ -1050,16 +1075,15 @@ class ArenaRoamer(Node):
             hottest_range = 0.0
             return repulse_x, repulse_y, hottest_sensor, hottest_range
 
-        # Fallback: no front binary threats — compute simple repulsion from any blocked sensor
+        # Fallback: no front binary threats — compute simple repulsion only from
+        # forward-facing sensors. Side/back sensors are parking cameras only
+        # and must not affect reroute repulsion scoring.
         directions = {
             'front': (1.0, 0.0),
             'front_left': (1.0, 0.9),
             'front_right': (1.0, -0.9),
-            'left': (0.0, 1.0),
-            'right': (0.0, -1.0),
-            'back': (-1.0, 0.0),
         }
-        for sensor_name in self.sensor_names:
+        for sensor_name in ('front', 'front_left', 'front_right'):
             if self._sensor_blocked(sensor_name):
                 dir_x, dir_y = directions[sensor_name]
                 repulse_x += dir_x * 1.0
@@ -1433,6 +1457,123 @@ class ArenaRoamer(Node):
                 self._publish_cmd(0.0, 0.0, 0.0)
                 return
 
+        # Lightweight post-reroute probe handling: if set, run a small
+        # clearance probe loop before returning to full navigation. This
+        # runs early in the control loop after sensor/odom checks.
+        if self.probe_state is not None:
+            p = self.probe_state
+            phase = p.get('phase')
+            now = self._now_sec()
+            elapsed = now - p.get('start_sec', now)
+
+            # MOVE: drive straight holding probe_yaw for a short duration
+            if phase == 'move':
+                probe_yaw = p.get('probe_yaw', self.yaw)
+                duration = self.reroute_back_time * 3.5
+                # If any front sensor fires at the start of the tick, immediately
+                # transition to check without publishing any forward motion.
+                if self._sensors_blocked_any('front', 'front_left', 'front_right'):
+                    self.probe_state = {'phase': 'check', 'start_sec': now, 'probe_yaw': p.get('probe_yaw', self.yaw), 'attempt': p.get('attempt', 0)}
+                    # publish an explicit zero Twist to bypass avoid-override and
+                    # the slew limiter so the robot actually stops immediately
+                    cmd = Twist()
+                    cmd.linear.x = 0.0
+                    cmd.linear.y = 0.0
+                    cmd.angular.z = 0.0
+                    self.cmd_pub.publish(cmd)
+                    self.last_cmd_vx = 0.0
+                    self.last_cmd_vy = 0.0
+                    self.last_cmd_wz = 0.0
+                    self.last_cmd_time_sec = self._now_sec()
+                    return
+                # drive straight toward stored probe_yaw without any angular
+                # correction during the MOVE phase. Movement must be pure
+                # forward to avoid chassis swing into obstacles.
+                vx = min(self.rotate_forward_speed, self.max_linear_speed)
+                if elapsed < duration:
+                    # publish pure forward, no lateral, no rotation
+                    self._publish_cmd(vx, 0.0, 0.0)
+                    return
+                # move phase complete -> go to check. Publish explicit stop
+                # via Twist to bypass avoid-override and slew limiter.
+                self.probe_state = {'phase': 'check', 'start_sec': now, 'probe_yaw': probe_yaw, 'attempt': p.get('attempt', 0)}
+                cmd = Twist()
+                cmd.linear.x = 0.0
+                cmd.linear.y = 0.0
+                cmd.angular.z = 0.0
+                self.cmd_pub.publish(cmd)
+                self.last_cmd_vx = 0.0
+                self.last_cmd_vy = 0.0
+                self.last_cmd_wz = 0.0
+                self.last_cmd_time_sec = self._now_sec()
+                return
+
+            # ROTATE: rotate in place toward probe_yaw (no vx, no vy)
+            if phase == 'rotate':
+                probe_yaw = p.get('probe_yaw', self.yaw)
+                heading_err = self._normalize(probe_yaw - self.yaw)
+                wz = clamp(self.angular_kp * heading_err, -self.max_angular_speed, self.max_angular_speed)
+                # Publish pure rotation (no linear compensation) to avoid
+                # adding visible lateral/forward motion during the probe turn.
+                cmd = Twist()
+                cmd.linear.x = 0.0
+                cmd.linear.y = 0.0
+                cmd.angular.z = clamp(wz, -self.max_angular_speed, self.max_angular_speed)
+                self.cmd_pub.publish(cmd)
+                self.last_cmd_vx = 0.0
+                self.last_cmd_vy = 0.0
+                self.last_cmd_wz = wz
+                self.last_cmd_time_sec = self._now_sec()
+                # when within tolerance, transition to MOVE
+                if abs(heading_err) < self.reroute_correct_heading_tol:
+                    self.probe_state = {'phase': 'move', 'start_sec': now, 'probe_yaw': probe_yaw, 'attempt': p.get('attempt', 0)}
+                    return
+                return
+
+            # CHECK: stop and verify clearance; if blocked, retry with adjusted probe_yaw
+            if phase == 'check':
+                if elapsed < self.reroute_stop_time:
+                    # publish an explicit zero Twist to ensure immediate stop
+                    cmd = Twist()
+                    cmd.linear.x = 0.0
+                    cmd.linear.y = 0.0
+                    cmd.angular.z = 0.0
+                    self.cmd_pub.publish(cmd)
+                    self.last_cmd_vx = 0.0
+                    self.last_cmd_vy = 0.0
+                    self.last_cmd_wz = 0.0
+                    self.last_cmd_time_sec = self._now_sec()
+                    return
+                # After stop, inspect front sensors
+                if not self._sensors_blocked_any('front', 'front_left', 'front_right'):
+                    # clear: end probe and resume normal navigation
+                    self.probe_state = None
+                    return
+                # still blocked: increment attempt and compute new probe_yaw
+                attempt = min(p.get('attempt', 0) + 1, 4)
+                # determine a sensor to base rotation away from (prefer left/right)
+                blocked = None
+                for s in ('front_left', 'front_right', 'front'):
+                    if self._sensor_blocked(s):
+                        blocked = s
+                        break
+                flip = -1.0 if self.robot_body_frame_flip_180 else 1.0
+                if blocked is None:
+                    blocked = 'front'
+                esc_x, esc_y = self._focused_escape_body_vector(blocked)
+                rotate_sign = -math.copysign(1.0, esc_y) * flip
+                # compute probe yaw by applying the same nominal rotate angle
+                rotate_angle = self.reroute_rotate_speed * (self.reroute_rotate_time * 0.65)
+                new_probe = self._normalize(self.yaw + rotate_sign * rotate_angle)
+                if attempt >= 4:
+                    # give up and trigger a full reroute by clearing cooldown
+                    self.probe_state = None
+                    self.reroute_cooldown_until = 0.0
+                    return
+                # otherwise schedule another move attempt
+                self.probe_state = {'phase': 'move', 'start_sec': now, 'probe_yaw': new_probe, 'attempt': attempt}
+                return
+
         if self.control_mode == 'acceptance_path':
             if self.route_failed:
                 self.state_name = 'ROUTE_FAILED'
@@ -1551,12 +1692,15 @@ class ArenaRoamer(Node):
         # The reroute will: back-diagonal away from the detected side, stop,
         # rotate in place away from obstacle, drive forward, then pause and
         # correct heading toward the path if clear. Repeat until cleared.
-        if hottest_sensor in ('front_left', 'front_right') or (hottest_sensor == 'front' and not math.isfinite(self._sensor_min('front_left', 'front_right'))):
-            if self.reroute_state is None:
+        # Trigger on any forward-facing sensor (center should not be dropped).
+        if hottest_sensor in ('front', 'front_left', 'front_right'):
+            now = self._now_sec()
+            if self.reroute_state is None and now > self.reroute_cooldown_until:
                 # Trigger reroute — do NOT skip or advance the current waypoint.
                 # Keep waypoint so robot will continue attempting to reach it
                 # after the reroute completes.
-                self.reroute_state = {'phase': 'back_diag', 'start_sec': self._now_sec(), 'sensor': hottest_sensor}
+                self.reroute_state = {'phase': 'back_diag', 'start_sec': now, 'sensor': hottest_sensor}
+                # record reroute start time; cooldown/origin handled elsewhere
 
         if self.reroute_state is not None:
             state = self.reroute_state
@@ -1577,18 +1721,13 @@ class ArenaRoamer(Node):
                     # Back further/stronger to move away from detected obstacle
                     back_speed = 0.35
                     vx = back_dir_x * back_speed
-                    vy = back_dir_y * (back_speed * 0.65)
-
-                    # Use side/back IRs as observers: if intended lateral/backward
-                    # component is blocked, zero that axis to avoid driving into it.
-                    if vy > 0 and self._sensors_blocked_any('left', 'front_left'):
-                        vy = 0.0
-                    if vy < 0 and self._sensors_blocked_any('right', 'front_right'):
-                        vy = 0.0
+                    # Do not strafe during reroute back-off: zero lateral
+                    vy = 0.0
+                    # If backing toward an obstacle behind, zero vx
                     if vx < 0 and self._sensors_blocked_any('back'):
                         vx = 0.0
 
-                    self._publish_cmd(vx, vy, 0.0)
+                    self._publish_cmd(vx, 0.0, 0.0)
                     return
                 state['phase'] = 'stop'
                 state['start_sec'] = self._now_sec()
@@ -1605,11 +1744,19 @@ class ArenaRoamer(Node):
 
             # Phase: rotate in place away from obstacle (no strafing)
             if state['phase'] == 'rotate':
-                if elapsed < self.reroute_rotate_time:
-                    # stronger in-place rotation away from obstacle
-                    rotate_sign = math.copysign(1.0, esc_y)
+                # Only actively rotate for a fraction of the rotate phase,
+                # then hold rotation (no angular velocity) for the remainder.
+                active_rotate_time = self.reroute_rotate_time * 0.65
+                if elapsed < active_rotate_time:
+                    # Rotate AWAY from the obstacle side (use opposite sign of escape y)
+                    flip = -1.0 if self.robot_body_frame_flip_180 else 1.0
+                    rotate_sign = -math.copysign(1.0, esc_y) * flip
                     wz = rotate_sign * self.reroute_rotate_speed
                     self._publish_cmd(0.0, 0.0, clamp(wz, -self.max_angular_speed, self.max_angular_speed))
+                    return
+                if elapsed < self.reroute_rotate_time:
+                    # Hold position: no rotation during the remainder of rotate phase
+                    self._publish_cmd(0.0, 0.0, 0.0)
                     return
                 state['phase'] = 'forward'
                 state['start_sec'] = self._now_sec()
@@ -1617,7 +1764,9 @@ class ArenaRoamer(Node):
 
             # Phase: drive forward a short burst to attempt rejoin
             if state['phase'] == 'forward':
-                if elapsed < (self.reroute_back_time * 0.9 + self.reroute_rotate_time):
+                forward_total = (self.reroute_back_time * 0.9 + self.reroute_rotate_time)
+                recovery_window = 0.30 * self.reroute_rotate_time
+                if elapsed < forward_total:
                     # drive forward only (no lateral). Use stronger forward burst
                     fwd = self.rotate_forward_speed
                     # require front clearance greater than obstacle_clear_distance + margin
@@ -1625,12 +1774,18 @@ class ArenaRoamer(Node):
                     required_clear = self.obstacle_clear_distance + 0.06
                     if not math.isfinite(fc) or fc < required_clear or self._sensors_blocked_any('front', 'front_left', 'front_right'):
                         fwd = 0.0
-                    self._publish_cmd(fwd, 0.0, 0.0)
+                    # Apply a small counter-rotation for the initial recovery window to bias back
+                    # No path recovery rotation during forward phase: drive straight
+                    wz = 0.0
+                    # No strafing in forward phase: vy must be zero
+                    self._publish_cmd(fwd, 0.0, wz)
                     return
                 # after forward burst, if still blocked restart, otherwise pause
                 if self._sensors_blocked_any('front', 'front_left', 'front_right'):
-                    self.reroute_state = {'phase': 'back_diag', 'start_sec': self._now_sec(), 'sensor': sensor}
+                    now = self._now_sec()
+                    self.reroute_state = {'phase': 'back_diag', 'start_sec': now, 'sensor': sensor}
                     return
+                # mark post-clear and start cooldown window upon completion
                 state['phase'] = 'post_clear'
                 state['start_sec'] = self._now_sec()
                 return
@@ -1642,7 +1797,17 @@ class ArenaRoamer(Node):
                 if elapsed < self.reroute_post_clear_pause:
                     self._publish_cmd(0.0, 0.0, 0.0)
                     return
-                # end reroute and allow normal motion selection to resume
+                # End reroute: set a cooldown to avoid immediate retrigger.
+                now = self._now_sec()
+                self.reroute_cooldown_until = now + self.reroute_post_clear_pause * 2.0
+                # start lightweight probe sequence before full navigation resumes
+                self.probe_state = {
+                    'phase': 'move',
+                    'start_sec': now,
+                    'probe_yaw': self.yaw,
+                    'attempt': 0,
+                }
+                # end reroute and allow probe to run
                 self.reroute_state = None
                 return
 
@@ -1662,8 +1827,12 @@ class ArenaRoamer(Node):
                 lateral_mag = 0.28
                 vy = -math.copysign(lateral_mag, bearing) if abs(bearing) > 1e-3 else 0.0
                 # rotate away from obstacle: rotate sign opposite obstacle bearing
-                if abs(bearing) > 1e-3:
-                    rotate_sign = -math.copysign(1.0, bearing)
+                # Prefer shortest-path heading bias latched at waypoint activation
+                flip = -1.0 if self.robot_body_frame_flip_180 else 1.0
+                if getattr(self, 'waypoint_activation_heading_error', None) is not None:
+                    rotate_sign = math.copysign(1.0, self.waypoint_activation_heading_error) * flip
+                elif abs(bearing) > 1e-3:
+                    rotate_sign = -math.copysign(1.0, bearing) * flip
                 else:
                     # fallback: pick the side with more clearance
                     left_clear = self._sensor_min('left', 'front_left')
@@ -1676,6 +1845,8 @@ class ArenaRoamer(Node):
                 self.just_activated_waypoint = False
                 return
             # Drive forward slightly while rotating, do not strafe.
+            # Clear the just_activated flag even if we didn't have a remembered obstacle
+            self.just_activated_waypoint = False
             self._publish_cmd(self.rotate_forward_speed, 0.0, self._rotation_command(goal_heading_error, None, None))
             return
 
@@ -1690,8 +1861,11 @@ class ArenaRoamer(Node):
                 bearing = math.atan2(rel_by, rel_bx)
                 lateral_mag = 0.22
                 vy = -math.copysign(lateral_mag, bearing) if abs(bearing) > 1e-3 else 0.0
-                if abs(bearing) > 1e-3:
-                    rotate_sign = -math.copysign(1.0, bearing)
+                flip = -1.0 if self.robot_body_frame_flip_180 else 1.0
+                if getattr(self, 'waypoint_activation_heading_error', None) is not None:
+                    rotate_sign = math.copysign(1.0, self.waypoint_activation_heading_error) * flip
+                elif abs(bearing) > 1e-3:
+                    rotate_sign = -math.copysign(1.0, bearing) * flip
                 else:
                     left_clear = self._sensor_min('left', 'front_left')
                     right_clear = self._sensor_min('right', 'front_right')
@@ -1702,6 +1876,8 @@ class ArenaRoamer(Node):
                 self.just_activated_waypoint = False
                 return
             # Drive forward slightly while correcting heading; no strafing.
+            # Clear the just_activated flag even if we didn't have a remembered obstacle
+            self.just_activated_waypoint = False
             self._publish_cmd(self.rotate_forward_speed, 0.0, self._rotation_command(goal_heading_error, None, None))
             return
 
@@ -1729,8 +1905,11 @@ class ArenaRoamer(Node):
                 bearing = math.atan2(rel_by, rel_bx)
                 lateral_mag = 0.20
                 vy = -math.copysign(lateral_mag, bearing) if abs(bearing) > 1e-3 else 0.0
-                if abs(bearing) > 1e-3:
-                    rotate_sign = -math.copysign(1.0, bearing)
+                flip = -1.0 if self.robot_body_frame_flip_180 else 1.0
+                if getattr(self, 'waypoint_activation_heading_error', None) is not None:
+                    rotate_sign = math.copysign(1.0, self.waypoint_activation_heading_error) * flip
+                elif abs(bearing) > 1e-3:
+                    rotate_sign = -math.copysign(1.0, bearing) * flip
                 else:
                     left_clear = self._sensor_min('left', 'front_left')
                     right_clear = self._sensor_min('right', 'front_right')
@@ -1741,6 +1920,8 @@ class ArenaRoamer(Node):
                 self.just_activated_waypoint = False
                 return
             # Rotate while moving forward a bit to help rejoin path; no lateral motion.
+            # Clear the just_activated flag even if we didn't have a remembered obstacle
+            self.just_activated_waypoint = False
             self._publish_cmd(self.rotate_forward_speed, 0.0, self._rotation_command(goal_heading_error, rotate_sensor, None))
             return
 

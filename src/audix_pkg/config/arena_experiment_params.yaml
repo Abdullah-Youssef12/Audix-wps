@@ -19,17 +19,17 @@ arena_roamer:
     wall_gain: 1.15
     repulsion_gain: 1.75
     escape_gain: 1.25
-    obstacle_detect_distance: 0.20
-    obstacle_danger_distance: 0.20
-    obstacle_clear_distance: 0.20
+    obstacle_detect_distance: 0.25
+    obstacle_danger_distance: 0.25
+    obstacle_clear_distance: 0.25
     startup_clearance_distance: 0.24
     hard_escape_distance: 0.12
     hard_escape_speed: 0.08
     caution_speed: 0.14
     wall_influence_distance: 0.90
     obstacle_side_min: 0.20
-    robot_center_offset_x: -0.16
-    robot_center_offset_y: -0.15
+    robot_center_offset_x: 0.0
+    robot_center_offset_y: 0.0
     debug_frame_id: arena10
     ir_filter_alpha_rise: 0.10
     ir_filter_alpha_fall: 0.58

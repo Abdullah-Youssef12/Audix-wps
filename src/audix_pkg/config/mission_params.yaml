@@ -7,9 +7,9 @@ mission_controller:
     obstacle_speed_full: 0.30        # m/s when front path is clear
     obstacle_speed_slow: 0.18        # m/s when obstacle is within detect distance
     obstacle_speed_creep: 0.08       # m/s when obstacle is within danger distance
-    obstacle_detect_distance: 0.15   # m — front obstacle detection threshold (15cm binary)
-    obstacle_clear_distance: 0.15    # m — larger threshold to confirm the front path is clear (15cm)
-    obstacle_danger_distance: 0.15   # m — front obstacle creep threshold
+    obstacle_detect_distance: 0.25   # m — front obstacle detection threshold (25cm binary)
+    obstacle_clear_distance: 0.25    # m — larger threshold to confirm the front path is clear (25cm)
+    obstacle_danger_distance: 0.25   # m — front obstacle creep threshold
     obstacle_side_min: 0.15          # m — minimum allowed side/back clearance
     front_blocked_threshold: 3       # consecutive blocked cycles before halting
     clear_threshold: 5               # consecutive clear cycles before resuming
@@ -74,8 +74,8 @@ mission_controller:
     debug_visualization: true
     debug_path_point_spacing: 0.03
     debug_path_max_points: 2500
-    robot_center_offset_x: -0.16
-    robot_center_offset_y: -0.15
+    robot_center_offset_x: 0.0
+    robot_center_offset_y: 0.0
     cmd_linear_accel_limit: 0.9     # m/s^2 forward acceleration limit
     cmd_linear_decel_limit: 1.8     # m/s^2 forward braking limit
     cmd_lateral_accel_limit: 1.1    # m/s^2 lateral acceleration limit

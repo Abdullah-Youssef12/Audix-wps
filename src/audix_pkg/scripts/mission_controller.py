@@ -718,24 +718,7 @@ class MissionController(Node):
     def _normalize(angle):
         return math.atan2(math.sin(angle), math.cos(angle))
 
-    def _latch_safe_rotation_direction(self):
-        """Determine which way to spin based on the last seen object."""
-        now_s = self.get_clock().now().nanoseconds / 1e9
-        left_time = max(self._last_ir_trigger.get('left', 0.0), self._last_ir_trigger.get('front_left', 0.0))
-        right_time = max(self._last_ir_trigger.get('right', 0.0), self._last_ir_trigger.get('front_right', 0.0))
-
-        self.forced_turn_direction = 0
-        recent_threshold = 4.0  # Only care if an object was seen in the last 4 seconds
-
-        if (now_s - left_time) < recent_threshold or (now_s - right_time) < recent_threshold:
-            if left_time > right_time:
-                self.forced_turn_direction = -1  # Object on Left -> Force Right Turn (CW)
-                self.get_logger().info("Safe Pivot: Box recently on Left. Forcing RIGHT rotation.")
-            elif right_time > left_time:
-                self.forced_turn_direction = 1   # Object on Right -> Force Left Turn (CCW)
-                self.get_logger().info("Safe Pivot: Box recently on Right. Forcing LEFT rotation.")
-
-
+    
     @staticmethod
     def _slew_axis(current, target, accel_limit, decel_limit, dt):
         if dt <= 0.0:
@@ -829,38 +812,35 @@ class MissionController(Node):
         """
         now_s = self.get_clock().now().nanoseconds / 1e9
         rx, ry, rw = 0.0, 0.0, 0.0
-
-        backup_threats = []
-        rotate_threats = []
+        active_threats = []
+        time_since_trigger = float('inf')
 
         for name in ('front', 'front_left', 'front_right'):
             dist = self._sensor_range_for_detection(name)
-
             if math.isfinite(dist) and dist <= 0.20:
-                backup_threats.append(name)
                 self._last_ir_trigger[name] = now_s
-            elif math.isfinite(dist) and dist <= 0.35:
-                rotate_threats.append(name)
-                self._last_ir_trigger[name] = now_s
+                active_threats.append(name)
+                time_since_trigger = 0.0
             else:
                 last = self._last_ir_trigger.get(name, 0.0)
-                if (now_s - last) <= self.repulse_decay_sec:
-                    rotate_threats.append(name)
+                elapsed = now_s - last
+                if elapsed <= self.repulse_decay_sec:
+                    active_threats.append(name)
+                    if elapsed < time_since_trigger:
+                        time_since_trigger = elapsed
 
-        if backup_threats:
-            # PHASE 1: BACKUP STRAIGHT (slightly reduced magnitude)
-            rx = -0.40
-            rw = 0.0
-
-        elif rotate_threats:
-            # PHASE 2: ROTATE IN PLACE (Toned down to prevent over-rotation)
-            rx = -0.30
-            if 'front_left' in rotate_threats and 'front_right' not in rotate_threats:
-                rw = -0.80
-            elif 'front_right' in rotate_threats and 'front_left' not in rotate_threats:
-                rw = 0.80
+        if active_threats:
+            if time_since_trigger <= 0.40:
+                rx = -0.50
+                rw = 0.0
             else:
-                rw = -0.80
+                rx = -0.30
+                if 'front_left' in active_threats and 'front_right' not in active_threats:
+                    rw = -1.20
+                elif 'front_right' in active_threats and 'front_left' not in active_threats:
+                    rw = 1.20
+                else:
+                    rw = -1.20
 
         return rx, ry, rw
 
@@ -2405,7 +2385,6 @@ class MissionController(Node):
                 self._publish_motion(wz=self._rotation_command(angle_error))
             else:
                 # Unlock forced turn when rotation is complete
-                self.forced_turn_direction = 0
                 self.use_resume_heading_for_target_rotate = False
                 self.state = State.MOVE_FORWARD
                 self.path_line_start = (self.center_x, self.center_y)
@@ -2480,7 +2459,6 @@ class MissionController(Node):
                 )
             else:
                 # Unlock forced turn when rotation is complete
-                self.forced_turn_direction = 0
                 self._publish_stop()
                 desired_lift = self._lift_target_for_waypoint(self.current_wp_idx)
                 if self.scan_use_lift and desired_lift > 0.0:
@@ -2548,7 +2526,6 @@ class MissionController(Node):
                 )
             else:
                 # Unlock forced turn when rotation is complete
-                self.forced_turn_direction = 0
                 self._publish_stop()
                 if self.parking_mode:
                     self.parking_mode = False

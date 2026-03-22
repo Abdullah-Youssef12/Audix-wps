@@ -31,6 +31,7 @@ install(
 		scripts/start_stop_node.py
 		scripts/waypoints_control.py
 		scripts/waypoints_final.py
+		scripts/ir_digital_bridge.py
 	DESTINATION lib/${PROJECT_NAME}
 )
 

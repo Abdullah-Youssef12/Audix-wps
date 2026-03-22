@@ -43,10 +43,40 @@ class MecanumKinematics(Node):
         self.invert_linear_x = bool(self.get_parameter('invert_linear_x').value)
         self.publish_odom = bool(self.get_parameter('publish_odom').value)
 
+        # PID parameters for per-wheel PI velocity controllers (exposed as ROS params)
+        self.declare_parameter('kp_vel', 7.0)
+        self.declare_parameter('ki_vel', 0.63392)
+        self.declare_parameter('deadband', 0.1)
+        self.declare_parameter('max_output', 50.0)
+        self.declare_parameter('integral_clamp', 20.0)
+
+        self.kp_vel = float(self.get_parameter('kp_vel').value)
+        self.ki_vel = float(self.get_parameter('ki_vel').value)
+        self.deadband = float(self.get_parameter('deadband').value)
+        self.max_output = float(self.get_parameter('max_output').value)
+        self.integral_clamp = float(self.get_parameter('integral_clamp').value)
+
+        # PID state
+        self._integral = {
+            'front_left': 0.0,
+            'front_right': 0.0,
+            'back_left': 0.0,
+            'back_right': 0.0,
+        }
+        self._actual_vel = {
+            'front_left': 0.0,
+            'front_right': 0.0,
+            'back_left': 0.0,
+            'back_right': 0.0,
+        }
+        self._last_pid_time = None
+        self._have_joint_feedback = False
+
         # Subscribers
         self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_cb, 10)
-        if self.publish_odom:
-            self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 10)
+        # Always subscribe to joint_states; joint_state_cb will update PID feedback
+        # and also perform odometry when publish_odom is True.
+        self.create_subscription(JointState, '/joint_states', self.joint_state_cb, 10)
 
         # Publishers
         self.wheel_pub = self.create_publisher(
@@ -104,7 +134,16 @@ class MecanumKinematics(Node):
         self.wheel_pub.publish(cmd)
 
     def joint_state_cb(self, msg: JointState):
-        """Forward kinematics from wheel velocities -> odometry."""
+        """Forward kinematics from wheel velocities -> odometry.
+
+        Also used to update PID feedback state every message.
+        """
+        # Always update PID feedback regardless of odom setting
+        try:
+            self._joint_state_cb(msg)
+        except Exception:
+            pass
+
         if not self.publish_odom or self.odom_pub is None:
             return
 
@@ -173,6 +212,21 @@ class MecanumKinematics(Node):
             odom.twist.covariance[i * 7] = tc[i]
 
         self.odom_pub.publish(odom)
+
+    def _joint_state_cb(self, msg: JointState):
+        """Update actual wheel velocities used by the PID controllers."""
+        key_map = {
+            'front_left_wheel_joint':  'front_left',
+            'front_right_wheel_joint': 'front_right',
+            'back_left_wheel_joint':   'back_left',
+            'back_right_wheel_joint':  'back_right',
+        }
+        for joint_name, key in key_map.items():
+            if joint_name in msg.name:
+                idx = msg.name.index(joint_name)
+                self._actual_vel[key] = msg.velocity[idx] if idx < len(msg.velocity) else 0.0
+
+        self._have_joint_feedback = True
 
 
 def main(args=None):

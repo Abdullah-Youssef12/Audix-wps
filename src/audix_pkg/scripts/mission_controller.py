@@ -2452,34 +2452,9 @@ class MissionController(Node):
                 # Route through safety pipeline (Repulsion + Parking Cameras)
                 self._publish_motion(vx=vx, vy=vy, wz=wz, apply_speed_zone=False)
             else:
-                if not self.enable_stop_scan:
-                    self._publish_stop()
-                    self._advance_from_waypoint()
-                    return
-                if not self._scan_enabled_for_waypoint(self.current_wp_idx):
-                    self._publish_stop()
-                    park_heading = self._parking_heading_for_waypoint(self.current_wp_idx)
-                    if park_heading is not None:
-                        self.resume_heading_target = park_heading
-                        self.parking_mode = True
-                        self.state = State.ROTATE_BACK_TO_PATH
-                        self.get_logger().info('At return waypoint — rotating into original parking pose')
-                    else:
-                        self._advance_from_waypoint()
-                    return
-                self.active_scan_direction = self._scan_direction_for_waypoint(self.current_wp_idx)
-                self.active_scan_dwell = self._scan_dwell_for_waypoint(self.current_wp_idx)
-                if self.straight_line_only and self.current_wp_idx < 3:
-                    self.resume_heading_target = self.mission_start_yaw
-                else:
-                    self.resume_heading_target = self._compute_resume_heading(tx, ty)
-                self.scan_heading_target = self._normalize(
-                    self.resume_heading_target +
-                    self._scan_direction_sign() * self.scan_turn_rad
-                )
-                self.state = State.ROTATE_TO_SCAN
-                self.get_logger().info('At stop point — rotating 90deg toward shelf')
-            return
+                # Skip any stop/scan/parking behavior and immediately advance to next waypoint.
+                self._advance_from_waypoint()
+                return
 
         # ---- ROTATE_TO_SCAN ----
         if self.state == State.ROTATE_TO_SCAN:

@@ -71,3 +71,17 @@ Notes
 - Do not modify files under `src/audix_pkg/meshes/`.
 
 If you want, I can run a quick TF/`robot_state_publisher` smoke test now to verify the URDF and sensor marker frames. 
+
+**TODO (Personal Reminders)**
+
+- Add configurable waypoint stop logic in `mission_controller.py` (parameterize stop/dwell behavior).
+- Make obstacle spawn size configurable and use a `default_obstacle_size` parameter in spawner code.
+- Change obstacle sizes in mission/config files to reflect real-world tests and tuning.
+- Improve the spawner GUI (`arena_spawn_panel.py` / `arena_obstacle_manager.py`) — better size/pose controls and presets.
+- Clean up unused scripts and tidy the codebase (remove or archive deprecated tools).
+- Update and clean this README with a developer checklist and testing steps.
+- Generate a node ↔ topic ↔ file map (which node publishes/subscribes to each topic/service, and what script implements it).
+- Run build & syntax checks: `colcon build --symlink-install --packages-select audix` and `python3 -m py_compile <script>`.
+- Smoke test in simulation and record real observations (behavior at waypoints, obstacle detection, reroute correctness).
+
+Put these on your short-term backlog and mark them done as you complete them.

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# Protected high-level behavior module: preserve detection, avoidance,
+# reroute, and motion-selection semantics during hardware migration.
+
 import math
 import random
 

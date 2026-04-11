@@ -33,6 +33,11 @@ install(
 		scripts/waypoints_control.py
 		scripts/waypoints_final.py
 		scripts/ir_digital_bridge.py
+		scripts/mock_imu_publisher.py
+		scripts/mock_odom_publisher.py
+		scripts/mock_ir_digital_publisher.py
+		scripts/mock_limit_switch_publisher.py
+		scripts/mock_robot_enable_publisher.py
 	DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -6,6 +6,8 @@ This document freezes the external contract for the current high-level navigatio
 
 `arena_roamer.py` is the active high-level navigation and obstacle-response brain for the Audix robot stack.
 
+Within the final Raspberry Pi plus ESP32 architecture, this file remains Pi-owned and is part of the main hardware path.
+
 Its responsibilities are:
 - consume filtered robot state and obstacle sensor inputs
 - select motion in response to waypoints and nearby obstacles
@@ -75,6 +77,19 @@ Important parameter groups:
 - reroute timing and bias values
 - startup gating and timeout values
 - body-frame sign conventions
+
+## Main Path Status
+
+Current main hardware path files:
+- [src/audix_pkg/launch/pi_hardware.launch.py](src/audix_pkg/launch/pi_hardware.launch.py)
+- [src/audix_pkg/scripts/arena_roamer.py](src/audix_pkg/scripts/arena_roamer.py)
+- [src/audix_pkg/scripts/ir_digital_bridge.py](src/audix_pkg/scripts/ir_digital_bridge.py)
+- [src/audix_pkg/config/hardware/ekf.yaml](src/audix_pkg/config/hardware/ekf.yaml)
+
+Related but non-main files kept as legacy or reference:
+- [src/audix_pkg/scripts/mission_controller.py](src/audix_pkg/scripts/mission_controller.py)
+- [src/audix_pkg/scripts/mecanum_kinematics.py](src/audix_pkg/scripts/mecanum_kinematics.py)
+- [src/audix_pkg/launch/hardware.launch.py](src/audix_pkg/launch/hardware.launch.py)
 
 ## Hardware Integration Rule
 

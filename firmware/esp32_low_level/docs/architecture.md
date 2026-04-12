@@ -10,6 +10,25 @@ This directory is a scaffold for the future ESP32 firmware that will own low-lev
 - telemetry task
 - minimal encoder ISR handlers
 
+## Ownership Boundary
+
+This firmware owns:
+- encoder reading
+- IMU reading
+- limit switch reading
+- mecanum inverse kinematics
+- four wheel-speed PID controllers
+- raw odometry generation
+- PWM and direction output
+- command-timeout safety
+- telemetry publishing
+
+This firmware does not own:
+- EKF
+- `arena_roamer.py`
+- IR scan conversion
+- RViz or other ROS-side debugging tools
+
 ## Module Boundaries
 
 - `pid.cpp`: per-wheel PID controller logic

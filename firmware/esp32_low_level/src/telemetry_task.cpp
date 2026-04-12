@@ -3,7 +3,8 @@
 namespace app {
 
 void runTelemetryTask(void*) {
-    // Placeholder for publishing odom, IMU, limit switch, IR states, and status telemetry.
+    // TODO: Publish /odom, /imu, digital IR topics, /limit_switch, and any
+    // optional wheel speed or motor status telemetry.
 }
 
 }  // namespace app

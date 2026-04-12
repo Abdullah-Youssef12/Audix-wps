@@ -24,6 +24,11 @@ When future edits touch [src/audix_pkg/scripts/arena_roamer.py](src/audix_pkg/sc
 - do not change decision logic just to match a new transport or topic source
 - review diffs carefully in the critical behavior areas above
 
+This protection applies equally to:
+- real Pi hardware bring-up
+- mock hardware bring-up
+- future firmware integration work
+
 ## Current Runtime Contract Reference
 
 See [docs/arena_roamer_contract.md](docs/arena_roamer_contract.md) for the live topic and parameter contract.

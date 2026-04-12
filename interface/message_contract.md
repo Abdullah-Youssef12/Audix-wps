@@ -6,6 +6,8 @@ This file captures message expectations at the Pi and ESP boundary.
 
 Use standard ROS message types wherever possible so the Pi-side stack can remain simple.
 
+This file and [interface/pi_esp_topics.md](interface/pi_esp_topics.md) are the source of truth for Pi to ESP interface expectations.
+
 ## Current Standard Messages
 
 ### Pi to ESP32
@@ -37,6 +39,10 @@ Use standard ROS message types wherever possible so the Pi-side stack can remain
 ### `/odom`
 - is the raw odometry source from wheel encoders and low-level integration
 - is fused with IMU on the Pi by EKF
+
+### `/odometry/filtered`
+- is produced on the Pi by `robot_localization`
+- is the only odometry topic the protected `arena_roamer.py` behavior should depend on
 
 ### `/imu`
 - should be published in standard ROS IMU form

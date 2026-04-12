@@ -7,8 +7,9 @@
 namespace app {
 
 void runMotionControlTask(void*) {
-    // Placeholder for the fixed-period motion loop:
-    // command timeout check, mecanum targets, per-wheel PID, PWM output.
+    // TODO: Run the fixed-period low-level control loop from the flowcharts:
+    // command timeout check, enable gating, mecanum inverse kinematics,
+    // four wheel-speed PID updates, output clamp, and PWM application.
 }
 
 }  // namespace app

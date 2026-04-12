@@ -18,6 +18,8 @@ SharedState& sharedState() {
 }  // namespace app
 
 void setup() {
+    // TODO: Initialize serial transport, micro-ROS, sensors, and RTOS tasks in
+    // the final firmware. This file only anchors the scaffold for now.
     app::initializeMotorDriver();
 }
 

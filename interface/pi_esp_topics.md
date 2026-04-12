@@ -50,6 +50,12 @@ To preserve `arena_roamer.py`, the system should keep these ROS-side topics stab
 - `/cmd_vel`
 - `/robot_enable`
 
+Pi-side ownership of `/odometry/filtered` is explicit:
+- ESP32 publishes `/odom` and `/imu`
+- Pi runs EKF
+- Pi publishes `/odometry/filtered`
+- `arena_roamer.py` consumes `/odometry/filtered`
+
 That means:
 - `ir_digital_bridge.py` remains the translation layer from digital IR to `LaserScan`
 - EKF remains the translation layer from raw odom plus IMU to filtered odometry
@@ -61,3 +67,7 @@ During early hardware bring-up:
 - prefer remapping and bridge adaptation over changing `arena_roamer.py`
 - keep message semantics simple and stable
 - make the fake hardware test harness match this contract exactly
+
+## Legacy Note
+
+Older launch or control paths may still exist in the repository, but this file is the source of truth for the intended Pi to ESP interface going forward.

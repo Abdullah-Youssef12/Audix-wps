@@ -4,7 +4,8 @@
 namespace app {
 
 void runSensorUpdateTask(void*) {
-    // Placeholder for encoder sampling, IMU updates, IR reads, and odometry integration.
+    // TODO: Sample encoders, refresh IMU state, read digital sensors, and
+    // update the raw odometry estimate used for Pi-side EKF fusion.
 }
 
 }  // namespace app

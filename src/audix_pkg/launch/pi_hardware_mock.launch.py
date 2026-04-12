@@ -13,6 +13,9 @@ def generate_launch_description():
     pkg_share = get_package_share_directory('audix')
     use_rviz = LaunchConfiguration('use_rviz')
     ir_mode = LaunchConfiguration('ir_mode')
+    ir_scenario = LaunchConfiguration('ir_scenario')
+    scenario_loop = LaunchConfiguration('scenario_loop')
+    scenario_start_delay = LaunchConfiguration('scenario_start_delay')
     blocked_sensors = LaunchConfiguration('blocked_sensors')
     linear_x = LaunchConfiguration('linear_x')
     linear_y = LaunchConfiguration('linear_y')
@@ -61,6 +64,9 @@ def generate_launch_description():
             {
                 'use_sim_time': False,
                 'mode': ir_mode,
+                'ir_scenario': ir_scenario,
+                'scenario_loop': scenario_loop,
+                'scenario_start_delay': scenario_start_delay,
                 'blocked_sensors': blocked_sensors,
             }
         ],
@@ -85,7 +91,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true'),
-        DeclareLaunchArgument('ir_mode', default_value='clear'),
+        DeclareLaunchArgument('ir_mode', default_value='scripted'),
+        DeclareLaunchArgument('ir_scenario', default_value='all_clear'),
+        DeclareLaunchArgument('scenario_loop', default_value='false'),
+        DeclareLaunchArgument('scenario_start_delay', default_value='1.0'),
         DeclareLaunchArgument('blocked_sensors', default_value=''),
         DeclareLaunchArgument('linear_x', default_value='0.0'),
         DeclareLaunchArgument('linear_y', default_value='0.0'),

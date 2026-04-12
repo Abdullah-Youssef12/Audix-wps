@@ -6,6 +6,43 @@ This document defines the intended split between the Raspberry Pi high-level ROS
 
 Preserve the current `arena_roamer.py` behavior while moving real-time control, sensing, and actuation to the ESP32.
 
+## Source Of Truth Files
+
+### Main Pi hardware path
+
+- [src/audix_pkg/launch/pi_hardware.launch.py](src/audix_pkg/launch/pi_hardware.launch.py)
+- [src/audix_pkg/scripts/arena_roamer.py](src/audix_pkg/scripts/arena_roamer.py)
+- [src/audix_pkg/scripts/ir_digital_bridge.py](src/audix_pkg/scripts/ir_digital_bridge.py)
+- [src/audix_pkg/scripts/start_stop_node.py](src/audix_pkg/scripts/start_stop_node.py)
+- [src/audix_pkg/config/hardware/ekf.yaml](src/audix_pkg/config/hardware/ekf.yaml)
+
+### Main mock hardware path
+
+- [src/audix_pkg/launch/pi_hardware_mock.launch.py](src/audix_pkg/launch/pi_hardware_mock.launch.py)
+- [src/audix_pkg/scripts/mock_imu_publisher.py](src/audix_pkg/scripts/mock_imu_publisher.py)
+- [src/audix_pkg/scripts/mock_odom_publisher.py](src/audix_pkg/scripts/mock_odom_publisher.py)
+- [src/audix_pkg/scripts/mock_ir_digital_publisher.py](src/audix_pkg/scripts/mock_ir_digital_publisher.py)
+- [src/audix_pkg/scripts/mock_robot_enable_publisher.py](src/audix_pkg/scripts/mock_robot_enable_publisher.py)
+- [src/audix_pkg/scripts/mock_limit_switch_publisher.py](src/audix_pkg/scripts/mock_limit_switch_publisher.py)
+
+### Main simulation path
+
+- [src/audix_pkg/launch/full_mission.launch.py](src/audix_pkg/launch/full_mission.launch.py)
+- [src/audix_pkg/launch/scissor_gazebo.launch.py](src/audix_pkg/launch/scissor_gazebo.launch.py)
+- [src/audix_pkg/scripts/arena_obstacle_manager.py](src/audix_pkg/scripts/arena_obstacle_manager.py)
+- [src/audix_pkg/scripts/arena_spawn_panel.py](src/audix_pkg/scripts/arena_spawn_panel.py)
+
+### Legacy or reference paths
+
+These remain in the repository for reference, comparison, or transitional use, but they are not the target final Raspberry Pi plus ESP32 path:
+
+- [src/audix_pkg/launch/hardware.launch.py](src/audix_pkg/launch/hardware.launch.py)
+- [src/audix_pkg/scripts/mission_controller.py](src/audix_pkg/scripts/mission_controller.py)
+- [src/audix_pkg/scripts/mecanum_kinematics.py](src/audix_pkg/scripts/mecanum_kinematics.py)
+- [src/audix_pkg/scripts/warehouse_robot.py](src/audix_pkg/scripts/warehouse_robot.py)
+- [src/audix_pkg/scripts/waypoints_control.py](src/audix_pkg/scripts/waypoints_control.py)
+- [src/audix_pkg/scripts/waypoints_final.py](src/audix_pkg/scripts/waypoints_final.py)
+
 ## Ownership Split
 
 ### Raspberry Pi
@@ -81,9 +118,13 @@ Instead:
 5. `arena_roamer.py` publishes `/cmd_vel` and lift slider commands.
 6. ESP32 consumes `/cmd_vel` and drives the base.
 
+The hardware path must not launch Gazebo, obstacle spawning tools, or `mecanum_kinematics.py`.
+
 ### Simulation mode
 
 Simulation remains separate and continues to provide the same effective inputs to `arena_roamer.py` through Gazebo and ROS bridges.
+
+Simulation-only helpers such as the obstacle manager and spawn panel should remain available for testing, but they are not part of the real robot path.
 
 ## Launch Separation
 
@@ -104,3 +145,8 @@ Sprint 1 establishes:
 - a Pi-to-ESP topic contract
 - a dedicated Pi hardware launch skeleton
 - a hardware-specific EKF config
+
+Sprint 2 establishes:
+- a mock hardware launch that mirrors the future ESP topic contract
+- a firmware scaffold under [firmware/esp32_low_level](firmware/esp32_low_level)
+- explicit separation between main paths and legacy or reference paths

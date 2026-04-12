@@ -5,6 +5,7 @@
 namespace app {
 
 Pose2D OdometryIntegrator::update(const WheelSpeeds& wheel_speeds, const RobotGeometry& geometry, float dt_seconds) {
+    // Raw wheel odometry source for Pi-side EKF fusion.
     const float vx = (geometry.wheel_radius_m / 4.0f) * (
         wheel_speeds.front_left + wheel_speeds.front_right + wheel_speeds.back_left + wheel_speeds.back_right);
     const float vy = (geometry.wheel_radius_m / 4.0f) * (

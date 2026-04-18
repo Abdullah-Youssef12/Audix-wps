@@ -1,10 +1,15 @@
-#include "shared_state.hpp"
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+
+#include "microros_transport.hpp"
 
 namespace app {
 
-void runCommandRxTask(void*) {
-    // TODO: Subscribe to /cmd_vel and /robot_enable, update shared command
-    // state, and record the latest command timestamp for timeout safety.
+void commandRxTask(void*) {
+    for (;;) {
+        microrosSpinSome(5UL);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 }
 
 }  // namespace app

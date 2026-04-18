@@ -1,53 +1,92 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+
+#include "config.hpp"
 
 namespace app {
 
+// -- Wheel index enum -----------------------------------------------
+enum WheelIndex : std::size_t {
+    kFrontLeft = 0,
+    kFrontRight = 1,
+    kRearLeft = 2,
+    kRearRight = 3,
+};
+constexpr std::size_t kWheelCount = 4U;
+
+// -- Shared data structs --------------------------------------------
 struct CommandState {
-    float linear_x = 0.0f;
-    float linear_y = 0.0f;
-    float angular_z = 0.0f;
-    bool enabled = false;
-    std::uint32_t last_command_ms = 0;
+    float cmd_vx = 0.0f;
+    float cmd_vy = 0.0f;
+    float cmd_wz = 0.0f;
+    bool robot_enabled = false;
+    uint32_t last_cmd_time_ms = 0U;
 };
 
-struct WheelSpeeds {
-    float front_left = 0.0f;
-    float front_right = 0.0f;
-    float back_left = 0.0f;
-    float back_right = 0.0f;
+struct WheelState {
+    float target_w_rad_s[kWheelCount] = {};
+    float measured_w_rad_s[kWheelCount] = {};
+    int32_t encoder_counts[kWheelCount] = {};
+    float pwm_output[kWheelCount] = {};
+};
+
+struct OdometryState {
+    float x = 0.0f;
+    float y = 0.0f;
+    float theta = 0.0f;
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float wtheta = 0.0f;
+};
+
+struct IMUState {
+    float accel_x = 0.0f;
+    float accel_y = 0.0f;
+    float accel_z = 0.0f;
+    float gyro_x = 0.0f;
+    float gyro_y = 0.0f;
+    float gyro_z = 0.0f;
+    float orientation_z = 0.0f;  // integrated yaw (rad)
 };
 
 struct SensorState {
-    WheelSpeeds measured_wheels;
-    bool ir_front = false;
-    bool ir_front_left = false;
-    bool ir_front_right = false;
-    bool ir_left = false;
-    bool ir_right = false;
-    bool ir_back = false;
-    bool limit_switch = false;
-    float imu_yaw_rate = 0.0f;
+    bool limit_switch_pressed = false;
 };
 
-struct Pose2D {
-    float x = 0.0f;
-    float y = 0.0f;
-    float yaw = 0.0f;
-};
+// -- Init -----------------------------------------------------------
+void initSharedState();
 
-struct SharedState {
-    CommandState command;
-    SensorState sensors;
-    Pose2D odom;
-};
+// -- Command --------------------------------------------------------
+CommandState getCommandState();
+void updateCommandState(const CommandState& state);
+void setCommandVelocity(float vx, float vy, float wz, uint32_t timestamp_ms);
+void setRobotEnabled(bool enabled);
 
-SharedState& sharedState();
+// -- Wheel ----------------------------------------------------------
+WheelState getWheelState();
+void setWheelTargets(const float target_w_rad_s[kWheelCount]);
+void setMeasuredWheelState(const float measured_w_rad_s[kWheelCount],
+                           const int32_t encoder_counts[kWheelCount]);
+void setPwmOutputs(const float pwm_output[kWheelCount]);
 
-void runCommandRxTask(void*);
-void runMotionControlTask(void*);
-void runSensorUpdateTask(void*);
-void runTelemetryTask(void*);
+// -- Odometry -------------------------------------------------------
+OdometryState getOdometryState();
+void setOdometryState(const OdometryState& state);
+
+// -- IMU ------------------------------------------------------------
+IMUState getImuState();
+void setImuState(const IMUState& state);
+
+// -- Sensor ---------------------------------------------------------
+SensorState getSensorState();
+void setLimitSwitchPressed(bool pressed);
+
+// -- Task entry points ----------------------------------------------
+void commandRxTask(void*);
+void motionControlTask(void*);
+void sensorUpdateTask(void*);
+void telemetryTask(void*);
 
 }  // namespace app

@@ -118,7 +118,7 @@ class MockIrDigitalPublisher(Node):
         self.scenario_steps = SCENARIOS[self.ir_scenario]
         self.scenario_total_duration = sum(duration for duration, _ in self.scenario_steps)
 
-        self.publishers = {
+        self._publishers = {
             key: self.create_publisher(Bool, topic, 10)
             for key, topic in SENSOR_TOPICS.items()
         }
@@ -175,7 +175,7 @@ class MockIrDigitalPublisher(Node):
 
     def _publish(self):
         now_sec = self.get_clock().now().nanoseconds / 1e9
-        for sensor_name, publisher in self.publishers.items():
+        for sensor_name, publisher in self._publishers.items():
             msg = Bool()
             msg.data = self._blocked_state(sensor_name, now_sec)
             publisher.publish(msg)

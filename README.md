@@ -1,87 +1,431 @@
-# Audix ROS2 Jazzy Workspace
+# Audix ROS 2 / micro-ROS Workspace
 
-Human-friendly summary of what the repo contains, how to run the full simulation, and where the detection/reroute logic lives.
+Final ROS 2 and micro-ROS workspace for the Audix robot. This repository contains the Raspberry Pi ROS 2 runtime, ESP32 low-level micro-ROS firmware, hardware bring-up tools, and validation procedures for the real robot.
 
-Top-level idea
-- Package: `audix` (source in `src/audix_pkg`)
-- Simulation stack: ROS 2 Jazzy + Gazebo (gz-sim) + rviz2 for visualization
+## Purpose
 
-Quick run (one command)
-Run this from the repository root to launch the arena simulation with sane cleanup and a single RViz window:
+This workspace is the final Pi-to-ESP32 integration path.
 
-```bash
-./scripts/clean_launch_arena.sh
+The Raspberry Pi runs ROS 2 Jazzy, owns the high-level robot runtime, and hosts the `micro_ros_agent`.
+
+The ESP32 runs the low-level base controller firmware and communicates with the Pi through micro-ROS.
+
+## Repository Layout
+
+```text
+.
+├── firmware/
+│   └── esp32_low_level/
+├── src/
+│   └── audix_pkg/
+├── interface/
+├── docs/
+├── scripts/
+└── audix_ubuntu.code-workspace
 ```
 
-What `./scripts/clean_launch_arena.sh` does
-- Cleans up any stale simulation or visualization processes
-- Launches the Gazebo-based arena launch and associated nodes
-- Starts RViz after a short delay and tracks its PID for clean shutdown
+## ESP32 Low-Level Firmware
 
-Key files and their purpose
-- `src/audix_pkg/launch/midterm.launch.py`: Main convenience launch used for classroom demos. Starts the Gazebo world and most nodes.
-- `src/audix_pkg/launch/scissor_gazebo.launch.py`: Lower-level Gazebo + robot spawn launch (used by `midterm.launch.py`).
-- `src/audix_pkg/launch/arena_experiment.launch.py`: Arena experiment launch that starts the Gazebo world, bridges, and experiment nodes. Note: RViz start was removed from this launch (RViz is started by `./scripts/clean_launch_arena.sh` to avoid duplicate windows).
-- `src/audix_pkg/urdf/audix.urdf`: Robot description; sensor frame origins are defined here and must match `sensor_positions` in the code.
-- `src/audix_pkg/config/ekf.yaml`: EKF configuration (frame names, sensor sources, covariances).
-- `src/audix_pkg/config/mission_params.yaml` and `src/audix_pkg/config/arena_experiment_params.yaml`: Tunable experiment and mission parameters (waypoints, thresholds, IR ranges, reroute timings).
+Final ESP32 firmware lives here:
 
-Main code that handles detection and reroute logic
-- `src/audix_pkg/scripts/arena_roamer.py`: Primary obstacle detection and avoidance node for the arena experiment. Handles IR topic subscriptions, binary sensor sequencing, mapping sensor names to topics, and the local reroute (3-point) behavior. This file contains the sensor-to-topic remapping and the visual markers used for debugging.
-- `src/audix_pkg/scripts/mission_controller.py`: Higher-level mission FSM (waypoint sequencing, EKF-based navigation, and mission-level reroute/probe sequencing). Contains mission parameters and the code that triggers reroutes when blocking obstacles are found.
-- `src/audix_pkg/scripts/arena_obstacle_manager.py`: Runtime obstacle spawning and tracking (used for experiments and replaying obstacle layouts).
-- `src/audix_pkg/scripts/cardinal_motion_debug.py`: Helpful debug utilities for cardinal motion tests and sensor offset tuning.
-
-Useful commands
-- Build and source:
-```bash
-colcon build --symlink-install --packages-select audix
-source install/setup.bash
-```
-- Run the full experiment (recommended):
-```bash
-./scripts/clean_launch_arena.sh
-```
-- If you need to run only the launch file (not recommended because it may start a second RViz):
-```bash
-ros2 launch audix src/audix_pkg/launch/arena_experiment.launch.py
+```text
+firmware/esp32_low_level
 ```
 
-Files to inspect when debugging sensors or reroute behavior
-- `src/audix_pkg/urdf/audix.urdf` — verify the sensor joint origins and `gazebo` sensor `<range>` settings.
-- `src/audix_pkg/scripts/arena_roamer.py` — topic remapping, `sensor_positions`, `_sensor_direction_body`, and IR handling code.
-- `src/audix_pkg/scripts/mission_controller.py` — mission-level reroute logic and probe sequencing.
-- `src/audix_pkg/config/arena_experiment_params.yaml` and `mission_params.yaml` — thresholds that control when detection → reroute occurs.
+The ESP32 owns:
 
-Quick checks while sim is running
-- Verify sensor topics:
-```bash
-ros2 topic echo /ir_front/scan --once
-ros2 topic echo /ir_left/scan --once
+- DC motor drivers
+- wheel encoders
+- IMU
+- base limit switch
+- low-level PID/motion control
+- RTOS tasks
+- micro-ROS client
+
+The ESP32 subscribes to:
+
+```text
+/cmd_vel
+/robot_enable
 ```
-- Check odometry and IMU:
+
+The ESP32 publishes:
+
+```text
+/odom
+/imu
+/limit_switch
+```
+
+## Raspberry Pi ROS 2 Runtime
+
+Pi-side ROS package lives here:
+
+```text
+src/audix_pkg
+```
+
+The Pi owns:
+
+- ROS 2 Jazzy runtime
+- `micro_ros_agent`
+- launch files
+- IR sensors
+- Pi-owned stepper/scissor-lift bench path
+- hardware validation scripts
+- future GUI bridge
+- future vision node integration
+- future joystick teleop
+
+## Public Pi-to-ESP Contract
+
+The core Pi-to-ESP topic contract is:
+
+| Direction | Topic | Type | Purpose |
+|---|---|---|---|
+| Pi -> ESP32 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Base velocity command |
+| Pi -> ESP32 | `/robot_enable` | `std_msgs/msg/Bool` | Enable/disable motion |
+| ESP32 -> Pi | `/odom` | `nav_msgs/msg/Odometry` | Encoder-derived odometry |
+| ESP32 -> Pi | `/imu` | `sensor_msgs/msg/Imu` | IMU feedback |
+| ESP32 -> Pi | `/limit_switch` | `std_msgs/msg/Bool` | Base limit switch state |
+
+Do not change this contract unless the Pi and ESP32 sides are updated together.
+
+## Pi-Owned Hardware
+
+The Pi owns the six IR sensors:
+
+```text
+/ir_front_digital
+/ir_front_left_digital
+/ir_front_right_digital
+/ir_left_digital
+/ir_right_digital
+/ir_back_digital
+```
+
+The Pi also owns the first real scissor-lift bench path:
+
+- DRV8825 stepper driver
+- lift limit switch
+- jog up/down
+- homing
+- later lift-level control
+
+## ESP32 Firmware Build
+
+From Ubuntu/WSL or Pi:
+
 ```bash
-ros2 topic echo /odometry/filtered --once
+cd ~/audix/microROS/firmware/esp32_low_level
+pio run -e esp32dev
+```
+
+Upload when the ESP32 is connected:
+
+```bash
+pio run -e esp32dev -t upload
+```
+
+Optional serial monitor:
+
+```bash
+pio device monitor -b 115200
+```
+
+## Build The Pi Workspace
+
+```bash
+cd ~/audix/microROS
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y --skip-keys="micro_ros_agent"
+colcon build --symlink-install
+```
+
+Source the workspace:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/audix/microROS/install/setup.bash
+```
+
+## Build micro-ROS Agent On The Pi
+
+```bash
+mkdir -p ~/micro_ros_agent_ws/src
+cd ~/micro_ros_agent_ws/src
+git clone -b jazzy https://github.com/micro-ROS/micro-ROS-Agent.git
+
+cd ~/micro_ros_agent_ws
+source /opt/ros/jazzy/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+```
+
+Source it:
+
+```bash
+source ~/micro_ros_agent_ws/install/setup.bash
+```
+
+## Run Real Pi Hardware Stack
+
+```bash
+cd ~/audix/microROS
+source /opt/ros/jazzy/setup.bash
+source ~/micro_ros_agent_ws/install/setup.bash
+source ~/audix/microROS/install/setup.bash
+
+ros2 launch audix pi_hardware.launch.py serial_device:=/dev/serial0 serial_baud:=115200 use_rviz:=false
+```
+
+## Verify micro-ROS Link
+
+In another Pi terminal:
+
+```bash
+cd ~/audix/microROS
+source /opt/ros/jazzy/setup.bash
+source ~/micro_ros_agent_ws/install/setup.bash
+source ~/audix/microROS/install/setup.bash
+
+ros2 topic info /cmd_vel
+ros2 topic info /robot_enable
+ros2 topic echo /odom --once
 ros2 topic echo /imu --once
+ros2 topic echo /limit_switch --once
 ```
 
-Notes
-- RViz is intentionally started by `./scripts/clean_launch_arena.sh` to ensure only one RViz window opens and that it is cleaned up properly on exit.
-- Keep `use_sim_time: True` for any node running in simulation.
-- Do not modify files under `src/audix_pkg/meshes/`.
+Expected:
 
-If you want, I can run a quick TF/`robot_state_publisher` smoke test now to verify the URDF and sensor marker frames. 
+```text
+/cmd_vel subscription count: 1
+/robot_enable subscription count: 1
+/odom publishes data
+/imu publishes data
+/limit_switch publishes data
+```
 
-**TODO (Personal Reminders)**
+## Base Motion Test
 
-- Add configurable waypoint stop logic in `mission_controller.py` (parameterize stop/dwell behavior).
-- Make obstacle spawn size configurable and use a `default_obstacle_size` parameter in spawner code.
-- Change obstacle sizes in mission/config files to reflect real-world tests and tuning.
-- Improve the spawner GUI (`arena_spawn_panel.py` / `arena_obstacle_manager.py`) — better size/pose controls and presets.
-- Clean up unused scripts and tidy the codebase (remove or archive deprecated tools).
-- Update and clean this README with a developer checklist and testing steps.
-- Generate a node ↔ topic ↔ file map (which node publishes/subscribes to each topic/service, and what script implements it).
-- Run build & syntax checks: `colcon build --symlink-install --packages-select audix` and `python3 -m py_compile <script>`.
-- Smoke test in simulation and record real observations (behavior at waypoints, obstacle detection, reroute correctness).
+Always put the robot on blocks first.
 
-Put these on your short-term backlog and mark them done as you complete them.
+Enable motion:
+
+```bash
+ros2 topic pub /robot_enable std_msgs/msg/Bool "{data: true}" --once
+```
+
+Forward test:
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.10, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
+```
+
+Strafe test:
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.10, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 10
+```
+
+Yaw test:
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.40}}" -r 10
+```
+
+Stop:
+
+```bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" --once
+ros2 topic pub /robot_enable std_msgs/msg/Bool "{data: false}" --once
+```
+
+## IMU Test
+
+```bash
+ros2 topic hz /imu
+ros2 topic echo /imu
+```
+
+Expected:
+
+- acceleration changes when tilted or moved
+- angular velocity spikes during rotation
+- yaw/orientation changes when rotating around Z
+- topic publishes at stable rate
+
+## Encoder / Odometry Test
+
+```bash
+ros2 topic hz /odom
+ros2 topic echo /odom
+```
+
+Expected:
+
+- forward command changes `odom.twist.twist.linear.x`
+- strafe command changes `odom.twist.twist.linear.y`
+- yaw command changes `odom.twist.twist.angular.z`
+
+## Limit Switch Test
+
+The ESP32 base limit switch publishes:
+
+```text
+/limit_switch
+```
+
+Test:
+
+```bash
+ros2 topic echo /limit_switch
+```
+
+Expected:
+
+```text
+released -> false
+pressed  -> true
+```
+
+## RTOS / Timing Test
+
+Use ROS topic rates as the external health check:
+
+```bash
+ros2 topic hz /odom
+ros2 topic hz /imu
+ros2 topic hz /limit_switch
+```
+
+Expected:
+
+- stable topic rates
+- no stalls
+- no deadlocks
+- robot stops on command timeout
+- robot stops on disable
+- robot stops if micro-ROS agent connection is lost
+
+## Pi Manual Bench Tools
+
+This workspace includes Pi-side bench tools for real hardware validation:
+
+- `base_pid_bench.py`
+- `pi_stepper_bench.py`
+- `realtime_watch.py`
+- `pi_ir_gpio_publisher.py`
+
+Launch manual bench tools with:
+
+```bash
+ros2 launch audix pi_manual_bench.launch.py
+```
+
+## IR Sensor Test
+
+Run the Pi hardware stack, then inspect digital IR topics:
+
+```bash
+ros2 topic echo /ir_front_digital
+ros2 topic echo /ir_front_left_digital
+ros2 topic echo /ir_front_right_digital
+ros2 topic echo /ir_left_digital
+ros2 topic echo /ir_right_digital
+ros2 topic echo /ir_back_digital
+```
+
+Trigger one physical sensor at a time and confirm the correct topic changes.
+
+## Stepper / Scissor Lift Bench
+
+The first lift bench path is Pi-owned, not ESP32-owned.
+
+Expected commands are handled through the Pi bench utility:
+
+- jog up
+- jog down
+- stop
+- home
+- read limit switch
+
+Use this before integrating lift levels into the full mission stack.
+
+## Debug Playbook
+
+If `/cmd_vel` shows `Subscription count: 0`:
+
+- ESP32 is not connected to ROS
+- check ESP32 power
+- check `micro_ros_agent`
+- check UART wiring
+- check common ground
+- check baud rate `115200`
+
+Run the agent alone for debug:
+
+```bash
+ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/serial0 -b 115200 -v6
+```
+
+If `/odom` does not update:
+
+- check encoder wiring
+- check encoder polarity
+- check counts-per-revolution
+- check motor driver wiring
+- check wheel order
+
+If `/imu` does not update:
+
+- check I2C wiring
+- check IMU power
+- check address
+- check sensor orientation
+
+If motors do not move:
+
+- confirm `/robot_enable` is true
+- confirm `/cmd_vel` is publishing
+- confirm motor power rail
+- confirm driver wiring
+- confirm timeout is not stopping motion
+
+If movement direction is wrong:
+
+- test one wheel at a time
+- fix motor polarity
+- fix encoder sign
+- fix wheel order
+- verify mecanum wheel orientation
+
+## Safety
+
+Before real motion:
+
+- put robot on blocks
+- use low speeds first
+- verify stop command
+- verify disable command
+- verify timeout stop
+- verify agent-loss stop
+- verify limit switch behavior
+
+Never tune PID before confirming:
+
+- encoder counts change correctly
+- motor direction is correct
+- wheel order is correct
+- odometry updates
+- stop/disable works
+
+## Related Windows Sandbox
+
+The separate Windows-only ESP32 sandbox lives outside this repo:
+
+```text
+C:\Users\TiBa\Documents\PlatformIO\Projects\audix_esp32_windows_test
+```
+
+That sandbox is for standalone ESP32 testing from VS Code and should not be confused with this final Pi/micro-ROS workspace.

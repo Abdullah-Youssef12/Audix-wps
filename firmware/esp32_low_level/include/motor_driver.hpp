@@ -4,15 +4,8 @@
 
 namespace app {
 
-struct MotorOutputs {
-    float front_left_pwm = 0.0f;
-    float front_right_pwm = 0.0f;
-    float back_left_pwm = 0.0f;
-    float back_right_pwm = 0.0f;
-};
-
-void initializeMotorDriver();
-void applyMotorOutputs(const MotorOutputs& outputs);
+void initMotorDriver();
+void writeMotorOutputs(const float pwm_output[kWheelCount]);
 void stopAllMotors();
 
 }  // namespace app

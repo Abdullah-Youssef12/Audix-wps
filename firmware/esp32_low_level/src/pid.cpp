@@ -4,15 +4,18 @@
 
 namespace app {
 
-void PidController::configure(float kp, float ki, float kd, float output_min, float output_max) {
+void PidController::setGains(float kp, float ki, float kd) {
     kp_ = kp;
     ki_ = ki;
     kd_ = kd;
+}
+
+void PidController::setOutputLimits(float output_min, float output_max) {
     output_min_ = output_min;
     output_max_ = output_max;
 }
 
-void PidController::setIntegralClamp(float integral_min, float integral_max) {
+void PidController::setIntegralLimits(float integral_min, float integral_max) {
     integral_min_ = integral_min;
     integral_max_ = integral_max;
 }
@@ -25,24 +28,36 @@ void PidController::reset() {
 
 float PidController::update(float target, float measured, float dt_seconds, bool enable_integral) {
     const float error = target - measured;
-    if (enable_integral && dt_seconds > 0.0f) {
-        integral_ += error * dt_seconds;
-        integral_ = std::clamp(integral_, integral_min_, integral_max_);
-    }
-
     float derivative = 0.0f;
     if (has_previous_error_ && dt_seconds > 0.0f) {
         derivative = (error - previous_error_) / dt_seconds;
     }
 
+    const float proportional = kp_ * error;
+    const float derivative_term = kd_ * derivative;
+
+    float candidate_integral = integral_;
+    if (enable_integral && dt_seconds > 0.0f) {
+        candidate_integral += error * dt_seconds;
+        candidate_integral = std::clamp(candidate_integral, integral_min_, integral_max_);
+    }
+
+    const float unclamped_output = proportional + ki_ * candidate_integral + derivative_term;
+    const float clamped_output = std::clamp(unclamped_output, output_min_, output_max_);
+
+    if (enable_integral) {
+        const bool not_saturated = (unclamped_output == clamped_output);
+        const bool relieving_high_saturation = (unclamped_output > output_max_) && (error < 0.0f);
+        const bool relieving_low_saturation = (unclamped_output < output_min_) && (error > 0.0f);
+        if (not_saturated || relieving_high_saturation || relieving_low_saturation) {
+            integral_ = candidate_integral;
+        }
+    }
+
     previous_error_ = error;
     has_previous_error_ = true;
 
-    // This is the per-wheel PID output used by the motion-control task. In the
-    // final firmware, instantiate four controllers and reset their integrators
-    // whenever motion is disabled or command timeout safety trips.
-    const float output = kp_ * error + ki_ * integral_ + kd_ * derivative;
-    return std::clamp(output, output_min_, output_max_);
+    return std::clamp(proportional + ki_ * integral_ + derivative_term, output_min_, output_max_);
 }
 
 }  // namespace app

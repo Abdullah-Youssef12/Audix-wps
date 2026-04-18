@@ -1,0 +1,21 @@
+{
+  "folders": [
+    {
+      "name": "Audix microROS",
+      "path": "."
+    },
+    {
+      "name": "ESP32 Final Firmware",
+      "path": "firmware/esp32_low_level"
+    }
+  ],
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "files.exclude": {
+      "**/.pio": true,
+      "**/build": true,
+      "**/install": true,
+      "**/log": true
+    }
+  }
+}

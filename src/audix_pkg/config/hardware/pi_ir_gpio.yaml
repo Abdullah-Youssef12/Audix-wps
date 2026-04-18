@@ -1,0 +1,16 @@
+# Replace these BCM GPIO numbers with the real control-PCB to Pi harness map
+# before final robot deployment.
+
+pi_ir_gpio_publisher:
+  ros__parameters:
+    publish_rate_hz: 20.0
+    debounce_ms: 10.0
+    blocked_when_low: true
+    pull_up: false
+    log_state_changes: true
+    front_gpio: 5
+    front_left_gpio: 6
+    front_right_gpio: 13
+    left_gpio: 19
+    right_gpio: 26
+    back_gpio: 21

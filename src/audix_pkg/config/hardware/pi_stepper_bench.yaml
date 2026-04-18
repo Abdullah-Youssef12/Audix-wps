@@ -1,0 +1,22 @@
+# Replace these BCM GPIO numbers and polarity settings with the real lift-driver
+# harness before using the bench tool on hardware.
+
+pi_stepper_bench:
+  ros__parameters:
+    step_gpio: 20
+    dir_gpio: 16
+    enable_gpio: 21
+    enable_active_low: true
+    up_direction_high: true
+    limit_switch_gpio: 26
+    limit_switch_active_low: true
+    limit_switch_pull_up: true
+    limit_switch_debounce_ms: 5.0
+    default_rate_hz: 400.0
+    home_rate_hz: 250.0
+    default_home_timeout_sec: 12.0
+    home_direction: down
+    disable_on_exit: true
+    log_interval_sec: 1.0
+    status_topic: /debug/stepper_bench/status
+    limit_switch_topic: /debug/stepper_bench/limit_switch

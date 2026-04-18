@@ -1,6 +1,7 @@
 # ESP32 Low-Level Architecture
 
-This directory is a scaffold for the future ESP32 firmware that will own low-level control.
+This directory contains the ESP32 low-level firmware for the Audix warehouse
+robot hardware path.
 
 ## Intended Task Split
 
@@ -8,7 +9,7 @@ This directory is a scaffold for the future ESP32 firmware that will own low-lev
 - motion control task
 - sensor update task
 - telemetry task
-- minimal encoder ISR handlers
+- quadrature encoder ISR handling
 
 ## Ownership Boundary
 
@@ -38,4 +39,16 @@ This firmware does not own:
 - `safety.cpp`: command timeout and enable gating
 - `microros_transport.cpp`: transport and executor integration points
 
-This is intentionally a skeleton, not a finished firmware implementation.
+## Runtime Contract
+
+Pi to ESP32:
+- `/cmd_vel` as `geometry_msgs/msg/Twist`
+- `/robot_enable` as `std_msgs/msg/Bool`
+
+ESP32 to Pi:
+- `/odom` as `nav_msgs/msg/Odometry`
+- `/imu` as `sensor_msgs/msg/Imu`
+- `/limit_switch` as `std_msgs/msg/Bool`
+
+The firmware intentionally does not publish IR topics in this implementation,
+matching the current explicit firmware instruction for this repository task.

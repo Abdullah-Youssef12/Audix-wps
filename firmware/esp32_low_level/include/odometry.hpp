@@ -1,17 +1,27 @@
 #pragma once
 
-#include "mecanum.hpp"
+#include <cstdint>
+
 #include "shared_state.hpp"
 
 namespace app {
 
-class OdometryIntegrator {
+class OdometryTracker {
 public:
-    Pose2D update(const WheelSpeeds& wheel_speeds, const RobotGeometry& geometry, float dt_seconds);
-    const Pose2D& pose() const;
+    void reset();
+    void update(const int32_t encoder_counts[kWheelCount],
+                const IMUState& imu_state,
+                float dt_seconds,
+                float measured_w_rad_s_out[kWheelCount],
+                OdometryState& odometry_state_out);
+    const OdometryState& state() const;
 
 private:
-    Pose2D pose_;
+    bool initialized_ = false;
+    int32_t previous_counts_[kWheelCount] = {};
+    OdometryState state_ = {};
 };
+
+OdometryTracker& odometryTracker();
 
 }  // namespace app

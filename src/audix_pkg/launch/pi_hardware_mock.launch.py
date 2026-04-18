@@ -27,7 +27,9 @@ def generate_launch_description():
         ]),
         launch_arguments={
             'use_micro_ros_agent': 'false',
+            'use_pi_ir_gpio': 'false',
             'use_start_stop': 'false',
+            'use_arena_roamer': 'true',
             'use_rviz': use_rviz,
         }.items(),
     )

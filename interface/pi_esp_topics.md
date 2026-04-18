@@ -24,18 +24,38 @@ This file defines the intended ROS and micro-ROS topic boundary between the Rasp
 - `/odom` as `nav_msgs/msg/Odometry`
   Purpose: raw wheel odometry source for EKF
 
+### Optional for hardware supervision
+- `/limit_switch` as `std_msgs/msg/Bool`
+- `/wheel_speeds` as a message to be defined later
+- `/motor_status` as a message to be defined later
+
+## Pi-local hardware topics
+
+These topics are published by Raspberry Pi GPIO code and do not cross the ESP32 boundary:
+
 - `/ir_front_digital` as `std_msgs/msg/Bool`
 - `/ir_front_left_digital` as `std_msgs/msg/Bool`
 - `/ir_front_right_digital` as `std_msgs/msg/Bool`
 - `/ir_left_digital` as `std_msgs/msg/Bool`
 - `/ir_right_digital` as `std_msgs/msg/Bool`
 - `/ir_back_digital` as `std_msgs/msg/Bool`
-  Purpose: digital obstacle sensor states consumed by `ir_digital_bridge.py`
 
-### Optional for hardware supervision
-- `/limit_switch` as `std_msgs/msg/Bool`
-- `/wheel_speeds` as a message to be defined later
-- `/motor_status` as a message to be defined later
+Purpose: digital obstacle sensor states consumed by `ir_digital_bridge.py`
+
+## Pi-local bench and debug topics
+
+These topics are intended for bring-up, manual validation, and operator visibility:
+
+- `/debug/pid_bench/status` as `std_msgs/msg/String`
+- `/debug/realtime_watch/status` as `std_msgs/msg/String`
+- `/debug/stepper_bench/status` as `std_msgs/msg/String`
+- `/debug/stepper_bench/limit_switch` as `std_msgs/msg/Bool`
+
+Purpose:
+
+- manual base PID validation on the Pi
+- live timing/rate inspection of ESP32-fed topics
+- isolated lift stepper + limit switch bench testing on the Pi
 
 ## Adapter Rules
 

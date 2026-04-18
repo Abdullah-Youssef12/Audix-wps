@@ -38,6 +38,10 @@ install(
 		scripts/mock_ir_digital_publisher.py
 		scripts/mock_limit_switch_publisher.py
 		scripts/mock_robot_enable_publisher.py
+		scripts/base_pid_bench.py
+		scripts/pi_ir_gpio_publisher.py
+		scripts/pi_stepper_bench.py
+		scripts/realtime_watch.py
 	DESTINATION lib/${PROJECT_NAME}
 )
 

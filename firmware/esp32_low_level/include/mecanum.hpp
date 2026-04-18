@@ -1,22 +1,21 @@
 #pragma once
 
+#include "shared_state.hpp"
 #include "config.hpp"
 
 namespace app {
 
-struct BodyCommand {
-    float linear_x = 0.0f;
-    float linear_y = 0.0f;
-    float angular_z = 0.0f;
+struct ChassisVelocity {
+    float vx = 0.0f;
+    float vy = 0.0f;
+    float wz = 0.0f;
 };
 
-struct WheelTargets {
-    float front_left = 0.0f;
-    float front_right = 0.0f;
-    float back_left = 0.0f;
-    float back_right = 0.0f;
-};
+// Converts body velocity to wheel angular velocities (rad/s)
+void inverseKinematics(const ChassisVelocity& command,
+                       float wheel_rad_s_out[kWheelCount]);
 
-WheelTargets inverseKinematics(const BodyCommand& command, const RobotGeometry& geometry);
+// Converts wheel angular velocities to body velocity
+ChassisVelocity forwardKinematics(const float wheel_rad_s[kWheelCount]);
 
 }  // namespace app
